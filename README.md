@@ -1,5 +1,3 @@
 
 # system
-master_thesis_model
-
-save for safe
+the branch is for snr_base_2020
