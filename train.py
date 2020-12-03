@@ -16,7 +16,7 @@ import utils
 from data import get_musdb_folds, SeparationDataset, random_amplify, crop ,get_folds
 from test import evaluate, validate
 from waveunet import Waveunet
-
+from pypesq import pesq
 def main(args):
     #torch.backends.cudnn.benchmark=True # This makes dilated conv much faster for CuDNN 7.5
     # MODEL
@@ -42,25 +42,19 @@ def main(args):
     writer = SummaryWriter(args.log_dir)
 
     # ### DATASET
-    # musdb = get_musdb_folds(args.dataset_dir) #change myself
+
     dataset = get_folds(args.dataset_dir)
     # If not data augmentation, at least crop targets to fit model output shape
     crop_func = partial(crop, shapes=model.shapes)
     # Data augmentation function for training
-    augment_func = partial(random_amplify, shapes=model.shapes, min=0.7, max=1.0)
     train_data = SeparationDataset(dataset, "train", args.sr, args.channels, model.shapes, True, args.hdf_dir, audio_transform=crop_func)
     val_data = SeparationDataset(dataset, "val", args.sr, args.channels, model.shapes, False, args.hdf_dir, audio_transform=crop_func)
     test_data = SeparationDataset(dataset, "test", args.sr, args.channels, model.shapes, False, args.hdf_dir, audio_transform=crop_func)
 
 
-
-    # train_data = SeparationDataset(musdb, "train", args.sr, args.channels, model.shapes, True, args.hdf_dir, audio_transform=crop_func)
-    # val_data = SeparationDataset(musdb, "val", args.sr, args.channels, model.shapes, False, args.hdf_dir, audio_transform=None)
-    # test_data = SeparationDataset(musdb, "test", args.sr, args.channels, model.shapes, False, args.hdf_dir, audio_transform=None)
-
     dataloader = torch.utils.data.DataLoader(train_data, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, worker_init_fn=utils.worker_init_fn)
 
-    ##### TRAINING ####
+    # ##### TRAINING ####
 
     # Set up the loss function
     if args.loss == "L1":
@@ -118,16 +112,26 @@ def main(args):
 
                 if example_num % args.example_freq == 0:
                     input_centre = torch.mean(x[0, :, model.shapes["output_start_frame"]:model.shapes["output_end_frame"]], 0) # Stereo not supported for logs yet
-                    writer.add_audio("input", input_centre, state["step"], sample_rate=args.sr)
-
                     
-                    writer.add_audio("pred", torch.mean(outputs[0], 0), state["step"], sample_rate=args.sr)
+                    target=torch.mean(targets[0], 0).cpu().numpy()
+                    pred=torch.mean(outputs[0], 0).detach().cpu().numpy()
+                    inputs=input_centre.cpu().numpy()
+
+                    values1=round(pesq(target, inputs,16000),2)
+                    writer.add_scalar("pesq_input", values1, state["step"])
+                    values2=round(pesq(target,pred ,16000),2)
+                    writer.add_scalar("pesq_enhance", values2, state["step"])
+
+                    writer.add_scalar("pesq_improve", values2 - values1, state["step"])
+
+                    writer.add_audio("input:", input_centre, state["step"], sample_rate=args.sr)
+                    writer.add_audio("pred:", torch.mean(outputs[0], 0), state["step"], sample_rate=args.sr)
                     writer.add_audio("target", torch.mean(targets[0], 0), state["step"], sample_rate=args.sr)
 
                 pbar.update(1)
 
         # VALIDATE
-        val_loss = validate(args, model, criterion, val_data)
+        val_loss = validate(args, model, criterion, val_data,writer,state)
         print("VALIDATION FINISHED: LOSS: " + str(val_loss))
         writer.add_scalar("val_loss", val_loss, state["step"])
 
@@ -152,26 +156,24 @@ def main(args):
     print("TESTING")
     # Load best model based on validation loss
     state = utils.load_model(model, None, state["best_checkpoint"], args.cuda)
-    test_loss = validate(args, model, criterion, test_data)
+    test_loss = validate(args, model, criterion, test_data,writer,state)
     print("TEST FINISHED: LOSS: " + str(test_loss))
     writer.add_scalar("test_loss", test_loss, state["step"])
 
     # Mir_eval metrics
     test_metrics = evaluate(args, dataset["test"], model)
 
-    # Dump all metrics results into pickle file for later analysis if needed
+    # # Dump all metrics results into pickle file for later analysis if needed
     with open(os.path.join(args.checkpoint_dir, "results.pkl"), "wb") as f:
         pickle.dump(test_metrics, f)
-
+    avg=np.mean(test_metrics,0)
     # Write most important metrics into Tensorboard log
-    avg_SDRs =  np.mean([np.nanmean(song["SDR"]) for song in test_metrics]) 
-    avg_SIRs =  np.mean([np.nanmean(song["SIR"]) for song in test_metrics]) 
-
-    writer.add_scalar("test_SDR_" , avg_SDRs, state["step"])
-    writer.add_scalar("test_SIR_" , avg_SIRs, state["step"])
-    overall_SDR = np.mean([v for v in avg_SDRs.values()])
-    writer.add_scalar("test_SDR", overall_SDR)
-    print("SDR: " + str(overall_SDR))
+    avg_input_pesq = np.nanmean(avg[0])
+    avg_enhance_pesq =  np.nanmean(avg[1])
+    avg_improve_pesq =  np.nanmean(avg[2])
+    
+    print(avg_input_pesq,avg_enhance_pesq,avg_improve_pesq)
+    # writer.add_scalar("test_SDR", overall_SDR)
 
     writer.close()
 
@@ -184,13 +186,13 @@ if __name__ == '__main__':
                         help='Number of data loader worker threads (default: 4)')
     parser.add_argument('--features', type=int, default=32,
                         help='Number of feature channels per layer')
-    parser.add_argument('--log_dir', type=str, default='logs/waveunet',
+    parser.add_argument('--log_dir', type=str, default='logs/snr_waveunet',
                         help='Folder to write logs into')
     parser.add_argument('--dataset_dir', type=str, default="/media/hd03/sutsaiwei_data/data/yunwen_data",
                         help='Dataset path')
-    parser.add_argument('--hdf_dir', type=str, default="/media/hd03/sutsaiwei_data/Wave-U-Net-Pytorch/hdf",
+    parser.add_argument('--hdf_dir', type=str, default="/media/hd03/sutsaiwei_data/Wave-U-Net-Pytorch/hdf/snr_hdf",
                         help='Dataset path')
-    parser.add_argument('--checkpoint_dir', type=str, default='checkpoints/waveunet',
+    parser.add_argument('--checkpoint_dir', type=str, default='/media/hd03/sutsaiwei_data/Wave-U-Net-Pytorch/checkpoints/snr_waveunet',
                         help='Folder to write checkpoints into')
     parser.add_argument('--load_model', type=str, default=None,
                         help='Reload a previously trained model (whole task model)')
@@ -200,7 +202,7 @@ if __name__ == '__main__':
                         help='Minimum learning rate in LR cycle (default: 5e-5)')
     parser.add_argument('--cycles', type=int, default=2,
                         help='Number of LR cycles per epoch')
-    parser.add_argument('--batch_size', type=int, default=32,
+    parser.add_argument('--batch_size', type=int, default=4,
                         help="Batch size")
     parser.add_argument('--levels', type=int, default=6,
                         help="Number of DS/US blocks")
@@ -212,11 +214,13 @@ if __name__ == '__main__':
                         help="Number of input audio channels")
     parser.add_argument('--kernel_size', type=int, default=5,
                         help="Filter width of kernels. Has to be an odd number")
+    parser.add_argument('--kernel_size_without_sample', type=int, default=5,
+                        help="Filter width of kernels. Has to be an odd number")                    
     parser.add_argument('--output_size', type=float, default=2.0,
                         help="Output duration")
     parser.add_argument('--strides', type=int, default=4,
                         help="Strides in Waveunet")
-    parser.add_argument('--patience', type=int, default=10,
+    parser.add_argument('--patience', type=int, default=20,
                         help="Patience for early stopping on validation set")
     parser.add_argument('--example_freq', type=int, default=200,
                         help="Write an audio summary into Tensorboard logs every X training iterations")

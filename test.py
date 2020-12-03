@@ -5,7 +5,8 @@ import utils
 
 import numpy as np
 import torch
-
+import random
+from pypesq import pesq
 from utils import compute_loss
 
 def predict(audio, model):
@@ -114,32 +115,36 @@ def evaluate(args, dataset, model):
             print("Evaluating " + example["input"])
 
             # Load source references in their original sr and channel number
-            target_sources = np.stack(utils.load(example['target'], sr=None, mono=False)[0].T )
+            target_sources = utils.load(example['target'], sr=16000, mono=True)[0].flatten()
+            input_sources = utils.load(example['input'], sr=16000, mono=True)[0].flatten()
 
             # Predict using mixture
-            pred_sources = predict_song(args, example["input"], model)
-            pred_sources = np.stack(pred_sources.T )
+            pred_sources  = predict_song(args, example["input"], model).flatten()
+            # print(f'type : target_sources:{type(target_sources)} pred_sources:{type(pred_sources)}')
+            # print(f'shape : target_sources:{target_sources.shape} pred_sources:{pred_sources.shape} ')
 
             # Evaluate
-            SDR, ISR, SIR, SAR, _ = museval.metrics.bss_eval(target_sources, pred_sources)
-            song = {}
-            instruments=['vocals']
-            for idx, name in enumerate(instruments):
-                song[name] = {"SDR" : SDR[idx], "ISR" : ISR[idx], "SIR" : SIR[idx], "SAR" : SAR[idx]}
-            perfs.append(song)
+            input_pesq=round(pesq(target_sources, input_sources,16000),2)
+            enhance_pesq=round(pesq(target_sources, pred_sources ,16000),2)
+            # print(f'input_pesq:{input_pesq} enhance_pesq:{enhance_pesq} improve_pesq:{enhance_pesq-input_pesq} ')
+            # SDR, ISR, SIR, SAR, _ = museval.metrics.bss_eval(target_sources, pred_sources)
+            perfs.append([input_pesq,enhance_pesq,enhance_pesq-input_pesq])
 
     return perfs
 
 
-def validate(args, model, criterion, test_data):
+def validate(args, model, criterion, test_data,writer,state):
     # PREPARE DATA
     dataloader = torch.utils.data.DataLoader(test_data,
                                              batch_size=args.batch_size,
                                              shuffle=False,
                                              num_workers=args.num_workers)
-
+    # pesq_test=(random.randrange(len(test_data)))
     # VALIDATE
     model.eval()
+    avg_input=np.zeros(len(test_data) // args.batch_size)
+    avg_enhance=np.zeros(len(test_data) // args.batch_size)
+    avg_improve=np.zeros(len(test_data) // args.batch_size)
     total_loss = 0.
     with tqdm(total=len(test_data) // args.batch_size) as pbar, torch.no_grad():
         for example_num, (x, targets) in enumerate(dataloader):
@@ -147,11 +152,32 @@ def validate(args, model, criterion, test_data):
                 x = x.cuda()
                 targets = targets.cuda()
 
-            _, avg_loss = compute_loss(model, x, targets, criterion)
-
+            outputs, avg_loss = compute_loss(model, x, targets, criterion)
             total_loss += (1. / float(example_num + 1)) * (avg_loss - total_loss)
 
+            input_centre = torch.mean(x[0, :, model.shapes["output_start_frame"]:model.shapes["output_end_frame"]], 0)
+            
+            target=torch.mean(targets[0], 0).cpu().numpy()
+            pred=torch.mean(outputs[0], 0).detach().cpu().numpy()
+            inputs=input_centre.cpu().numpy()
+            
+            values1=round(pesq(target, inputs,16000),2)
+            values2=round(pesq(target, pred ,16000),2)
+            if(~np.isnan(values1) and  ~np.isnan(values2) ):
+                avg_input[example_num]=values1
+                avg_enhance[example_num]=values2
+                avg_improve[example_num]=values2 - values1
+
+            # print(values1,values2,values2 -values1)
             pbar.set_description("Current loss: {:.4f}".format(total_loss))
             pbar.update(1)
 
+    print(f'avg_input={np.nanmean(avg_input)}')
+    print(f'avg_enhance={np.nanmean(avg_enhance)}')
+    print(f'avg_improve={np.nanmean(avg_enhance-avg_input)}')
+
+    writer.add_scalar("val_input", np.nanmean(avg_input), state["epochs"])
+    writer.add_scalar("val_enhance", np.nanmean(avg_enhance), state["epochs"])
+    writer.add_scalar("val_improve", np.nanmean(avg_improve), state["epochs"])
+    
     return total_loss

@@ -23,7 +23,7 @@ def main(args):
     state = utils.load_model(model, None, args.load_model, args.cuda)
     print('Step', state['step'])
 
-    preds = predict_song(args, args.input, model)
+    preds,_ = predict_song(args, args.input, model)
 
     output_folder = os.path.dirname(args.input) if args.output is None else args.output
     utils.write_wav(os.path.join(output_folder, os.path.basename(args.input) + "_" + 'test' + ".wav"), preds.T, args.sr)

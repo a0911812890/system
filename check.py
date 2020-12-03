@@ -9,6 +9,7 @@ import librosa
 from utils import compute_loss
 import soundfile
 from pypesq import pesq
+import pandas as pd
 # mix_audio2, mix_sr = librosa.load('audio_examples/Cristina Vane - So Easy/mix.mp3', sr=None, mono=False)
 # mix_audio, mix_sr = librosa.load('audio_examples/Cristina Vane - So Easy/mix.mp3', sr=None, mono=False)
 # mix_channels = mix_audio.shape[0]
@@ -37,18 +38,17 @@ from pypesq import pesq
     # print(len(y),curr_sr)
     # print(len(y2),curr_sr2)
     # print(np.array_equal(y, y2))
-
-
-# target, curr_sr = librosa.load('/media/hd03/sutsaiwei_data/Wave-U-Net-Pytorch/target.wav', sr=16000, mono=True)
-# enhance, curr_sr = librosa.load('/media/hd03/sutsaiwei_data/Wave-U-Net-Pytorch/enhance.wav', sr=16000, mono=True)
-# noisy, curr_sr = librosa.load('/media/hd03/sutsaiwei_data/Wave-U-Net-Pytorch/noisy.wav', sr=16000, mono=True)
-# print(pesq( target, target,16000))
+# path='/media/hd03/sutsaiwei_data/Wave-U-Net-Pytorch/audio_examples/400000'
+# target, curr_sr = librosa.load(os.path.join(path,'target.wav'), sr=16000, mono=True)
+# enhance, curr_sr = librosa.load(os.path.join(path,'enhance.wav'), sr=16000, mono=True)
+# noisy, curr_sr = librosa.load(os.path.join(path,'noisy.wav'), sr=16000, mono=True)
+# print(type(pesq( target, target,16000)))
 # print(pesq( target, enhance,16000))
 # print(pesq( target, noisy,16000))
 # print(pesq(16000, target, target,'wb'))
 # print(pesq(16000, target, enhance,'wb'))
 # print(pesq(16000, target, noisy,'wb'))
-
-with h5py.File("/media/hd03/sutsaiwei_data/Wave-U-Net-Pytorch/hdf/test.hdf5", "r") as f:
-    print(f.attrs["sr"]) 
+x = float('nan')
+a=[x,1]
+print(pd.isnull(a))
         
