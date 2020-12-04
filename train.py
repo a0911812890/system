@@ -2,7 +2,7 @@ import argparse
 import os
 import time
 from functools import partial
-
+import pandas as pd
 import torch
 import pickle
 import numpy as np
@@ -78,7 +78,7 @@ def main(args):
         print("Continuing training full model from checkpoint " + str(args.load_model))
         state = utils.load_model(model, optimizer, args.load_model, args.cuda)
 
-    print('TRAINING START')
+    # print('TRAINING START')
     while state["worse_epochs"] < args.patience:
         print("epoch:"+str(state["epochs"]))
         print("Training one epoch from iteration " + str(state["step"]))
@@ -166,13 +166,8 @@ def main(args):
     # # Dump all metrics results into pickle file for later analysis if needed
     with open(os.path.join(args.checkpoint_dir, "results.pkl"), "wb") as f:
         pickle.dump(test_metrics, f)
-    avg=np.mean(test_metrics,0)
-    # Write most important metrics into Tensorboard log
-    avg_input_pesq = np.nanmean(avg[0])
-    avg_enhance_pesq =  np.nanmean(avg[1])
-    avg_improve_pesq =  np.nanmean(avg[2])
-    
-    print(avg_input_pesq,avg_enhance_pesq,avg_improve_pesq)
+    data = pd.DataFrame(test_metrics)
+    data.to_csv(os.path.join(args.checkpoint_dir, "results.csv"),sep=',')
     # writer.add_scalar("test_SDR", overall_SDR)
 
     writer.close()
@@ -232,7 +227,7 @@ if __name__ == '__main__':
                         help="Resampling strategy: fixed sinc-based lowpass filtering or learned conv layer: fixed/learned")
     parser.add_argument('--feature_growth', type=str, default="double",
                         help="How the features in each layer should grow, either (add) the initial number of features each time, or multiply by 2 (double)")
-
+    parser.add_argument('--output', type=str, default="/media/hd03/sutsaiwei_data/data/yunwen_data/test/enhance", help="Output path (same folder as input path if not set)")
     args = parser.parse_args()
 
     main(args)

@@ -1,8 +1,7 @@
 import museval
 from tqdm import tqdm
-
 import utils
-
+import os
 import numpy as np
 import torch
 import random
@@ -108,7 +107,8 @@ def predict_song(args, audio_path, model):
     return sources
 
 def evaluate(args, dataset, model):
-    perfs = list()
+    perfs = {'-10' : list() ,'-5' : list() ,'0' : list() ,'5' : list() ,'10' : list() }
+    perfs_name = {'-10' : list() ,'-5' : list() ,'0' : list() ,'5' : list() ,'10' : list() }
     model.eval()
     with torch.no_grad():
         for example in dataset:
@@ -122,15 +122,24 @@ def evaluate(args, dataset, model):
             pred_sources  = predict_song(args, example["input"], model).flatten()
             # print(f'type : target_sources:{type(target_sources)} pred_sources:{type(pred_sources)}')
             # print(f'shape : target_sources:{target_sources.shape} pred_sources:{pred_sources.shape} ')
-
+            output_folder = args.output
+            file_name=os.path.basename(example['input'])
+            utils.write_wav(os.path.join(output_folder,'enhance_'+file_name), pred_sources.T, args.sr)
+            fname,ext = os.path.splitext(file_name)
+            text=fname.split("_",4)
             # Evaluate
             input_pesq=round(pesq(target_sources, input_sources,16000),2)
             enhance_pesq=round(pesq(target_sources, pred_sources ,16000),2)
             # print(f'input_pesq:{input_pesq} enhance_pesq:{enhance_pesq} improve_pesq:{enhance_pesq-input_pesq} ')
-            # SDR, ISR, SIR, SAR, _ = museval.metrics.bss_eval(target_sources, pred_sources)
-            perfs.append([input_pesq,enhance_pesq,enhance_pesq-input_pesq])
+            
+            perfs[text[4]].append([input_pesq,enhance_pesq,enhance_pesq-input_pesq])
+            perfs_name[text[4]].append([[input_pesq,enhance_pesq,enhance_pesq-input_pesq],example['input']])
+        for key, value in perfs.items():
+            avg=np.mean(value,0)
+            perfs[key].append(avg)
+            perfs_name[key].append([[avg[0],avg[1],avg[2]],"avg"])
 
-    return perfs
+    return perfs_name
 
 
 def validate(args, model, criterion, test_data,writer,state):
