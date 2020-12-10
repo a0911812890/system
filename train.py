@@ -20,11 +20,12 @@ from pypesq import pesq
 def main(args):
     #torch.backends.cudnn.benchmark=True # This makes dilated conv much faster for CuDNN 7.5
     # MODEL
-    num_features = [args.features*i for i in range(1, args.levels+1)] if args.feature_growth == "add" else \
-                   [args.features*2**i for i in range(0, args.levels)]
+    num_features = [args.features*i for i in range(1, args.levels+2+args.levels_without_sample)] 
+    # print(num_features)
     target_outputs = int(args.output_size * args.sr)
     
-    model = Waveunet(args.channels, num_features, args.channels, kernel_size=args.kernel_size,
+    model = Waveunet(args.channels, num_features, args.channels,levels=args.levels, 
+                    encoder_kernel_size=args.encoder_kernel_size,decoder_kernel_size=args.decoder_kernel_size,
                     target_output_size=target_outputs, depth=args.depth, strides=args.strides,
                     conv_type=args.conv_type, res=args.res)
 
@@ -33,12 +34,11 @@ def main(args):
         print("move model to gpu")
         model.cuda()
 
-    print('model: ', model.shapes)
+    # print('model: ', model.shapes)
     print('parameter count: ', str(sum(p.numel() for p in model.parameters())))
-    # t=torch.rand(2,1,41641)
-    # print(model(t))
+    # print(model)
 
-
+    # exit(0)
     writer = SummaryWriter(args.log_dir)
 
     # ### DATASET
@@ -47,12 +47,13 @@ def main(args):
     # If not data augmentation, at least crop targets to fit model output shape
     crop_func = partial(crop, shapes=model.shapes)
     # Data augmentation function for training
-    train_data = SeparationDataset(dataset, "train", args.sr, args.channels, model.shapes, True, args.hdf_dir, audio_transform=crop_func)
-    val_data = SeparationDataset(dataset, "val", args.sr, args.channels, model.shapes, False, args.hdf_dir, audio_transform=crop_func)
+    if args.test is None:
+        train_data = SeparationDataset(dataset, "train", args.sr, args.channels, model.shapes, True, args.hdf_dir, audio_transform=crop_func)
+        val_data = SeparationDataset(dataset, "val", args.sr, args.channels, model.shapes, False, args.hdf_dir, audio_transform=crop_func)
     test_data = SeparationDataset(dataset, "test", args.sr, args.channels, model.shapes, False, args.hdf_dir, audio_transform=crop_func)
 
-
-    dataloader = torch.utils.data.DataLoader(train_data, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, worker_init_fn=utils.worker_init_fn)
+    if args.test is None:
+        dataloader = torch.utils.data.DataLoader(train_data, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, worker_init_fn=utils.worker_init_fn)
 
     # ##### TRAINING ####
 
@@ -75,87 +76,90 @@ def main(args):
 
     # LOAD MODEL CHECKPOINT IF DESIRED
     if args.load_model is not None:
-        print("Continuing training full model from checkpoint " + str(args.load_model))
+        print("Continuing full model from checkpoint " + str(args.load_model))
         state = utils.load_model(model, optimizer, args.load_model, args.cuda)
 
-    # print('TRAINING START')
-    while state["worse_epochs"] < args.patience:
-        print("epoch:"+str(state["epochs"]))
-        print("Training one epoch from iteration " + str(state["step"]))
-        avg_time = 0.
-        model.train()
-        with tqdm(total=len(train_data) // args.batch_size) as pbar:
-            np.random.seed()
-            for example_num, (x, targets) in enumerate(dataloader):
-                if args.cuda:
-                    x = x.cuda()
-                    targets = targets.cuda()
+    if args.test is None:
+        print('TRAINING START')
+        while state["worse_epochs"] < args.patience:
+            print("epoch:"+str(state["epochs"]))
+            print("Training one epoch from iteration " + str(state["step"]))
+            avg_time = 0.
+            model.train()
+            with tqdm(total=len(train_data) // args.batch_size) as pbar:
+                np.random.seed()
+                for example_num, (x, targets) in enumerate(dataloader):
+                    if args.cuda:
+                        x = x.cuda()
+                        targets = targets.cuda()
 
-                t = time.time()
+                    t = time.time()
 
-                # Set LR for this iteration
-                utils.set_cyclic_lr(optimizer, example_num, len(train_data) // args.batch_size, args.cycles, args.min_lr, args.lr)
-                writer.add_scalar("lr", utils.get_lr(optimizer), state["step"])
+                    # Set LR for this iteration
+                    utils.set_cyclic_lr(optimizer, example_num, len(train_data) // args.batch_size, args.cycles, args.min_lr, args.lr)
+                    writer.add_scalar("lr", utils.get_lr(optimizer), state["step"])
 
-                # Compute loss for each instrument/model
-                optimizer.zero_grad()
-                outputs, avg_loss = utils.compute_loss(model, x, targets, criterion, compute_grad=True)
+                    # Compute loss for each instrument/model
+                    optimizer.zero_grad()
+                    outputs, avg_loss = utils.compute_loss(model, x, targets, criterion, compute_grad=True)
 
-                optimizer.step()
+                    optimizer.step()
 
-                state["step"] += 1
+                    state["step"] += 1
 
-                t = time.time() - t
-                avg_time += (1. / float(example_num + 1)) * (t - avg_time)
+                    t = time.time() - t
+                    avg_time += (1. / float(example_num + 1)) * (t - avg_time)
 
-                writer.add_scalar("train_loss", avg_loss, state["step"])
+                    writer.add_scalar("train_loss", avg_loss, state["step"])
 
-                if example_num % args.example_freq == 0:
-                    input_centre = torch.mean(x[0, :, model.shapes["output_start_frame"]:model.shapes["output_end_frame"]], 0) # Stereo not supported for logs yet
-                    
-                    target=torch.mean(targets[0], 0).cpu().numpy()
-                    pred=torch.mean(outputs[0], 0).detach().cpu().numpy()
-                    inputs=input_centre.cpu().numpy()
+                    if example_num % args.example_freq == 0:
+                        input_centre = torch.mean(x[0, :, model.shapes["output_start_frame"]:model.shapes["output_end_frame"]], 0) # Stereo not supported for logs yet
+                        
+                        target=torch.mean(targets[0], 0).cpu().numpy()
+                        pred=torch.mean(outputs[0], 0).detach().cpu().numpy()
+                        inputs=input_centre.cpu().numpy()
 
-                    values1=round(pesq(target, inputs,16000),2)
-                    writer.add_scalar("pesq_input", values1, state["step"])
-                    values2=round(pesq(target,pred ,16000),2)
-                    writer.add_scalar("pesq_enhance", values2, state["step"])
+                        values1=round(pesq(target, inputs,16000),2)
+                        writer.add_scalar("pesq_input", values1, state["step"])
+                        values2=round(pesq(target,pred ,16000),2)
+                        writer.add_scalar("pesq_enhance", values2, state["step"])
 
-                    writer.add_scalar("pesq_improve", values2 - values1, state["step"])
+                        writer.add_scalar("pesq_improve", values2 - values1, state["step"])
 
-                    writer.add_audio("input:", input_centre, state["step"], sample_rate=args.sr)
-                    writer.add_audio("pred:", torch.mean(outputs[0], 0), state["step"], sample_rate=args.sr)
-                    writer.add_audio("target", torch.mean(targets[0], 0), state["step"], sample_rate=args.sr)
+                        writer.add_audio("input:", input_centre, state["step"], sample_rate=args.sr)
+                        writer.add_audio("pred:", torch.mean(outputs[0], 0), state["step"], sample_rate=args.sr)
+                        writer.add_audio("target", torch.mean(targets[0], 0), state["step"], sample_rate=args.sr)
 
-                pbar.update(1)
+                    pbar.update(1)
 
-        # VALIDATE
-        val_loss = validate(args, model, criterion, val_data,writer,state)
-        print("VALIDATION FINISHED: LOSS: " + str(val_loss))
-        writer.add_scalar("val_loss", val_loss, state["step"])
+            # VALIDATE
+            val_loss = validate(args, model, criterion, val_data,writer,state)
+            print("VALIDATION FINISHED: LOSS: " + str(val_loss))
+            writer.add_scalar("val_loss", val_loss, state["step"])
 
-        # EARLY STOPPING CHECK
-        checkpoint_path = os.path.join(args.checkpoint_dir, "checkpoint_" + str(state["step"]))
-        if val_loss >= state["best_loss"]:
-            state["worse_epochs"] += 1
-        else:
-            print("MODEL IMPROVED ON VALIDATION SET!")
-            state["worse_epochs"] = 0
-            state["best_loss"] = val_loss
-            state["best_checkpoint"] = checkpoint_path
+            # EARLY STOPPING CHECK
+            checkpoint_path = os.path.join(args.checkpoint_dir, "checkpoint_" + str(state["step"]))
+            if val_loss >= state["best_loss"]:
+                state["worse_epochs"] += 1
+            else:
+                print("MODEL IMPROVED ON VALIDATION SET!")
+                state["worse_epochs"] = 0
+                state["best_loss"] = val_loss
+                state["best_checkpoint"] = checkpoint_path
 
-        # CHECKPOINT
-        print("Saving model...")
-        utils.save_model(model, optimizer, state, checkpoint_path)
+            # CHECKPOINT
+            print("Saving model...")
+            utils.save_model(model, optimizer, state, checkpoint_path)
 
-        state["epochs"] += 1
+            state["epochs"] += 1
 
     #### TESTING ####
     # Test loss
     print("TESTING")
     # Load best model based on validation loss
-    state = utils.load_model(model, None, state["best_checkpoint"], args.cuda)
+    if args.test is None:
+        state = utils.load_model(model, None, state["best_checkpoint"], args.cuda)
+
     test_loss = validate(args, model, criterion, test_data,writer,state)
     print("TEST FINISHED: LOSS: " + str(test_loss))
     writer.add_scalar("test_loss", test_loss, state["step"])
@@ -177,9 +181,11 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--cuda', action='store_true',
                         help='Use CUDA (default: False)')
+    parser.add_argument('--test', action='store_true',
+                        help='Use CUDA (default: False)')
     parser.add_argument('--num_workers', type=int, default=4,
                         help='Number of data loader worker threads (default: 4)')
-    parser.add_argument('--features', type=int, default=32,
+    parser.add_argument('--features', type=int, default=24,
                         help='Number of feature channels per layer')
     parser.add_argument('--log_dir', type=str, default='logs/snr_waveunet',
                         help='Folder to write logs into')
@@ -197,35 +203,37 @@ if __name__ == '__main__':
                         help='Minimum learning rate in LR cycle (default: 5e-5)')
     parser.add_argument('--cycles', type=int, default=2,
                         help='Number of LR cycles per epoch')
-    parser.add_argument('--batch_size', type=int, default=4,
+    parser.add_argument('--batch_size', type=int, default=128,
                         help="Batch size")
-    parser.add_argument('--levels', type=int, default=6,
-                        help="Number of DS/US blocks")
+    parser.add_argument('--levels', type=int, default=7,
+                        help="Number of DS/US blocks ")
+    parser.add_argument('--levels_without_sample', type=int, default=5,
+                        help="Number of non-updown-DS/US blocks ") 
     parser.add_argument('--depth', type=int, default=1,
                         help="Number of convs per block")
     parser.add_argument('--sr', type=int, default=16000,
                         help="Sampling rate")
     parser.add_argument('--channels', type=int, default=1,
                         help="Number of input audio channels")
-    parser.add_argument('--kernel_size', type=int, default=5,
-                        help="Filter width of kernels. Has to be an odd number")
-    parser.add_argument('--kernel_size_without_sample', type=int, default=5,
-                        help="Filter width of kernels. Has to be an odd number")                    
-    parser.add_argument('--output_size', type=float, default=2.0,
+    parser.add_argument('--encoder_kernel_size', type=int, default=5,
+                        help="Filter width of kernels. Has to be an odd number")      
+    parser.add_argument('--decoder_kernel_size', type=int, default=5,
+                        help="Filter width of kernels. Has to be an odd number")                                 
+    parser.add_argument('--output_size', type=float, default=1.0,
                         help="Output duration")
-    parser.add_argument('--strides', type=int, default=4,
+    parser.add_argument('--strides', type=int, default=2,
                         help="Strides in Waveunet")
     parser.add_argument('--patience', type=int, default=20,
                         help="Patience for early stopping on validation set")
     parser.add_argument('--example_freq', type=int, default=200,
                         help="Write an audio summary into Tensorboard logs every X training iterations")
-    parser.add_argument('--loss', type=str, default="L1",
+    parser.add_argument('--loss', type=str, default="L2",
                         help="L1 or L2")
-    parser.add_argument('--conv_type', type=str, default="gn",
+    parser.add_argument('--conv_type', type=str, default="bn",
                         help="Type of convolution (normal, BN-normalised, GN-normalised): normal/bn/gn")
     parser.add_argument('--res', type=str, default="fixed",
                         help="Resampling strategy: fixed sinc-based lowpass filtering or learned conv layer: fixed/learned")
-    parser.add_argument('--feature_growth', type=str, default="double",
+    parser.add_argument('--feature_growth', type=str, default="add",
                         help="How the features in each layer should grow, either (add) the initial number of features each time, or multiply by 2 (double)")
     parser.add_argument('--output', type=str, default="/media/hd03/sutsaiwei_data/data/yunwen_data/test/enhance", help="Output path (same folder as input path if not set)")
     args = parser.parse_args()

@@ -14,7 +14,7 @@ def crop(x, target):
         return None
     if target is None:
         return x
-
+        
     target_shape = target.shape
     diff = x.shape[-1] - target_shape[-1]
     assert (diff % 2 == 0)

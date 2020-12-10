@@ -7,7 +7,7 @@ import torch
 import random
 from pypesq import pesq
 from utils import compute_loss
-
+from pystoi import stoi
 def predict(audio, model):
     if isinstance(audio, torch.Tensor):
         is_cuda = audio.is_cuda()
@@ -107,8 +107,11 @@ def predict_song(args, audio_path, model):
     return sources
 
 def evaluate(args, dataset, model):
-    perfs = {'-10' : list() ,'-5' : list() ,'0' : list() ,'5' : list() ,'10' : list() }
-    perfs_name = {'-10' : list() ,'-5' : list() ,'0' : list() ,'5' : list() ,'10' : list() }
+    dB_list_pesq = {'-10' : list() ,'-5' : list() ,'0' : list() ,'5' : list() ,'10' : list() }
+    dB_list_name_pesq = {'-10' : list() ,'-5' : list() ,'0' : list() ,'5' : list() ,'10' : list() }
+
+    dB_list_stoi = {'-10' : list() ,'-5' : list() ,'0' : list() ,'5' : list() ,'10' : list() }
+    dB_list_name_stoi = {'-10' : list() ,'-5' : list() ,'0' : list() ,'5' : list() ,'10' : list() }
     model.eval()
     with torch.no_grad():
         for example in dataset:
@@ -127,19 +130,32 @@ def evaluate(args, dataset, model):
             utils.write_wav(os.path.join(output_folder,'enhance_'+file_name), pred_sources.T, args.sr)
             fname,ext = os.path.splitext(file_name)
             text=fname.split("_",4)
-            # Evaluate
+            # Evaluate pesq
             input_pesq=round(pesq(target_sources, input_sources,16000),2)
             enhance_pesq=round(pesq(target_sources, pred_sources ,16000),2)
+
+            # Evaluate stoi
+            input_stoi = stoi(target_sources, input_sources, 16000, extended=False)
+            enhance_stoi = stoi(target_sources, pred_sources, 16000, extended=False)
             # print(f'input_pesq:{input_pesq} enhance_pesq:{enhance_pesq} improve_pesq:{enhance_pesq-input_pesq} ')
             
-            perfs[text[4]].append([input_pesq,enhance_pesq,enhance_pesq-input_pesq])
-            perfs_name[text[4]].append([[input_pesq,enhance_pesq,enhance_pesq-input_pesq],example['input']])
-        for key, value in perfs.items():
-            avg=np.mean(value,0)
-            perfs[key].append(avg)
-            perfs_name[key].append([[avg[0],avg[1],avg[2]],"avg"])
+            dB_list_pesq[text[4]].append([input_pesq,enhance_pesq,enhance_pesq-input_pesq])
+            dB_list_name_pesq[text[4]].append([[input_pesq,enhance_pesq,enhance_pesq-input_pesq],example['input']])
 
-    return perfs_name
+            dB_list_stoi[text[4]].append([input_stoi,enhance_stoi,enhance_stoi-input_stoi])
+            dB_list_name_stoi[text[4]].append([[input_stoi,enhance_stoi,enhance_stoi-input_stoi],example['input']])
+
+        for key, value in dB_list_pesq.items():
+            avg_pesq=np.mean(value,0)
+            pesq_list=[[avg_pesq[0],avg_pesq[1],avg_pesq[2]],"avg_pesq"]
+            dB_list_name_pesq[key].append([pesq_list])
+
+        for key, value in dB_list_stoi.items():
+            avg_stoi=np.mean(value,0)
+            stoi_list=[[avg_stoi[0],avg_stoi[1],avg_stoi[2]],"avg_stoi"]
+            dB_list_name_stoi[key].append([stoi_list])
+
+    return {'pesq' : dB_list_name_pesq ,'stoi' : dB_list_name_stoi}
 
 
 def validate(args, model, criterion, test_data,writer,state):
@@ -151,9 +167,15 @@ def validate(args, model, criterion, test_data,writer,state):
     # pesq_test=(random.randrange(len(test_data)))
     # VALIDATE
     model.eval()
-    avg_input=np.zeros(len(test_data) // args.batch_size)
-    avg_enhance=np.zeros(len(test_data) // args.batch_size)
-    avg_improve=np.zeros(len(test_data) // args.batch_size)
+    # print('np.zeros(len(test_data) // args.batch_size)',np.zeros(len(test_data) // args.batch_size))
+    len_data=len(test_data) // args.batch_size
+    avg_input_pesq=np.zeros(len_data+1)
+    avg_enhance_pesq=np.zeros(len_data+1)
+    avg_improve_pesq=np.zeros(len_data+1)
+
+    avg_input_stoi=np.zeros(len_data+1)
+    avg_enhance_stoi=np.zeros(len_data+1)
+    avg_improve_stoi=np.zeros(len_data+1)
     total_loss = 0.
     with tqdm(total=len(test_data) // args.batch_size) as pbar, torch.no_grad():
         for example_num, (x, targets) in enumerate(dataloader):
@@ -169,24 +191,40 @@ def validate(args, model, criterion, test_data,writer,state):
             target=torch.mean(targets[0], 0).cpu().numpy()
             pred=torch.mean(outputs[0], 0).detach().cpu().numpy()
             inputs=input_centre.cpu().numpy()
-            
+            # stoi
+            values1 = stoi(target, inputs, 16000, extended=False)
+            values2 = stoi(target, pred, 16000, extended=False)
+            if(~np.isnan(values1) and  ~np.isnan(values2) ):
+                avg_input_stoi[example_num]=values1
+                avg_enhance_stoi[example_num]=values2
+                avg_improve_stoi[example_num]=values2 - values1
+
+            # pesq
             values1=round(pesq(target, inputs,16000),2)
             values2=round(pesq(target, pred ,16000),2)
             if(~np.isnan(values1) and  ~np.isnan(values2) ):
-                avg_input[example_num]=values1
-                avg_enhance[example_num]=values2
-                avg_improve[example_num]=values2 - values1
+                avg_input_pesq[example_num]=values1
+                avg_enhance_pesq[example_num]=values2
+                avg_improve_pesq[example_num]=values2 - values1
 
             # print(values1,values2,values2 -values1)
             pbar.set_description("Current loss: {:.4f}".format(total_loss))
             pbar.update(1)
 
-    print(f'avg_input={np.nanmean(avg_input)}')
-    print(f'avg_enhance={np.nanmean(avg_enhance)}')
-    print(f'avg_improve={np.nanmean(avg_enhance-avg_input)}')
+    print(f'avg_input_pesq={np.nanmean(avg_input_pesq)}')
+    print(f'avg_enhance_pesq={np.nanmean(avg_enhance_pesq)}')
+    print(f'avg_improve_pesq={np.nanmean(avg_improve_pesq)}')
 
-    writer.add_scalar("val_input", np.nanmean(avg_input), state["epochs"])
-    writer.add_scalar("val_enhance", np.nanmean(avg_enhance), state["epochs"])
-    writer.add_scalar("val_improve", np.nanmean(avg_improve), state["epochs"])
+    print(f'avg_input_stoi={np.nanmean(avg_input_stoi)}')
+    print(f'avg_enhance_stoi={np.nanmean(avg_enhance_stoi)}')
+    print(f'avg_improve_stoi={np.nanmean(avg_improve_stoi)}')
+
+    writer.add_scalar("val_input_pesq", np.nanmean(avg_input_pesq), state["epochs"])
+    writer.add_scalar("val_enhance_pesq", np.nanmean(avg_enhance_pesq), state["epochs"])
+    writer.add_scalar("val_improve_pesq", np.nanmean(avg_improve_pesq), state["epochs"])
+
+    writer.add_scalar("avg_input_stoi", np.nanmean(avg_input_stoi), state["epochs"])
+    writer.add_scalar("avg_enhance_stoi", np.nanmean(avg_enhance_stoi), state["epochs"])
+    writer.add_scalar("avg_improve_stoi", np.nanmean(avg_improve_stoi), state["epochs"])
     
     return total_loss
