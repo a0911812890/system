@@ -18,6 +18,40 @@ def compute_output(model, inputs):
 
     return all_outputs
 
+def KD_compute_loss(model,teacher_model, inputs, targets, criterion, compute_grad=False):
+    '''
+    Computes gradients of model with given inputs and targets and loss function.
+    Optionally backpropagates to compute gradients for weights.
+    Procedure depends on whether we have one model for each source or not
+    :param model: Model to train with
+    :param inputs: Input mixture
+    :param targets: Target sources
+    :param criterion: Loss function to use (L1, L2, ..)
+    :param compute_grad: Whether to compute gradients
+    :return: Model outputs, Average loss over batch
+    '''
+    
+    loss = 0
+    KD_loss = 0
+
+    all_outputs = model(inputs)
+    teacher_all_outputs = teacher_model(inputs)
+
+
+    loss += criterion(all_outputs, targets)
+    KD_loss += criterion(all_outputs, teacher_all_outputs)
+    # print(f'loss={loss} , KD_loss={KD_loss}')
+    alpha = 0.5
+    total_loss = alpha*0.5*loss + (1-alpha)*0.5*KD_loss
+    if compute_grad:
+        total_loss.backward()
+
+    avg_loss = loss.item() / float(len(all_outputs))
+    KD_avg_loss = KD_loss.item() / float(len(all_outputs))
+    total_avg_loss = total_loss.item() / float(len(all_outputs))
+
+    return all_outputs, avg_loss ,KD_avg_loss ,total_avg_loss
+
 def compute_loss(model, inputs, targets, criterion, compute_grad=False):
     '''
     Computes gradients of model with given inputs and targets and loss function.

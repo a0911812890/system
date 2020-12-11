@@ -20,11 +20,19 @@ from pypesq import pesq
 def main(args):
     #torch.backends.cudnn.benchmark=True # This makes dilated conv much faster for CuDNN 7.5
     # MODEL
+    KD = True
     num_features = [args.features*i for i in range(1, args.levels+2+args.levels_without_sample)] 
     # print(num_features)
     target_outputs = int(args.output_size * args.sr)
-    
+    print(args.test)
+    if args.test is False:
+        print('OK')
     model = Waveunet(args.channels, num_features, args.channels,levels=args.levels, 
+                    encoder_kernel_size=args.encoder_kernel_size,decoder_kernel_size=args.decoder_kernel_size,
+                    target_output_size=target_outputs, depth=args.depth, strides=args.strides,
+                    conv_type=args.conv_type, res=args.res)
+
+    teacher_model = Waveunet(args.channels, num_features, args.channels,levels=args.levels, 
                     encoder_kernel_size=args.encoder_kernel_size,decoder_kernel_size=args.decoder_kernel_size,
                     target_output_size=target_outputs, depth=args.depth, strides=args.strides,
                     conv_type=args.conv_type, res=args.res)
@@ -33,6 +41,10 @@ def main(args):
         model = utils.DataParallel(model)
         print("move model to gpu")
         model.cuda()
+        # 
+        teacher_model = utils.DataParallel(teacher_model)
+        print("move teacher_model to gpu")
+        teacher_model.cuda()
 
     # print('model: ', model.shapes)
     print('parameter count: ', str(sum(p.numel() for p in model.parameters())))
@@ -47,12 +59,12 @@ def main(args):
     # If not data augmentation, at least crop targets to fit model output shape
     crop_func = partial(crop, shapes=model.shapes)
     # Data augmentation function for training
-    if args.test is None:
+    if args.test is False:
         train_data = SeparationDataset(dataset, "train", args.sr, args.channels, model.shapes, True, args.hdf_dir, audio_transform=crop_func)
         val_data = SeparationDataset(dataset, "val", args.sr, args.channels, model.shapes, False, args.hdf_dir, audio_transform=crop_func)
     test_data = SeparationDataset(dataset, "test", args.sr, args.channels, model.shapes, False, args.hdf_dir, audio_transform=crop_func)
 
-    if args.test is None:
+    if args.test is False:
         dataloader = torch.utils.data.DataLoader(train_data, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, worker_init_fn=utils.worker_init_fn)
 
     # ##### TRAINING ####
@@ -74,12 +86,18 @@ def main(args):
              "epochs" : 0,
              "best_loss" : np.Inf}
 
+    # load teacher model
+    if KD :
+        print("load teacher model" + str(args.teacher_model))
+        teacher_state = utils.load_model(teacher_model, None, args.teacher_model, args.cuda)
+        teacher_model.eval() # no training
+
     # LOAD MODEL CHECKPOINT IF DESIRED
     if args.load_model is not None:
         print("Continuing full model from checkpoint " + str(args.load_model))
         state = utils.load_model(model, optimizer, args.load_model, args.cuda)
 
-    if args.test is None:
+    if args.test is False:
         print('TRAINING START')
         while state["worse_epochs"] < args.patience:
             print("epoch:"+str(state["epochs"]))
@@ -99,9 +117,9 @@ def main(args):
                     utils.set_cyclic_lr(optimizer, example_num, len(train_data) // args.batch_size, args.cycles, args.min_lr, args.lr)
                     writer.add_scalar("lr", utils.get_lr(optimizer), state["step"])
 
-                    # Compute loss for each instrument/model
+                    # Compute loss for model
                     optimizer.zero_grad()
-                    outputs, avg_loss = utils.compute_loss(model, x, targets, criterion, compute_grad=True)
+                    outputs, avg_loss ,KD_avg_loss ,total_avg_loss = utils.KD_compute_loss(model,teacher_model, x, targets, criterion, compute_grad=True)
 
                     optimizer.step()
 
@@ -110,7 +128,9 @@ def main(args):
                     t = time.time() - t
                     avg_time += (1. / float(example_num + 1)) * (t - avg_time)
 
-                    writer.add_scalar("train_loss", avg_loss, state["step"])
+                    writer.add_scalar("train_avg_loss", avg_loss, state["step"])
+                    writer.add_scalar("train_KD_avg_loss", KD_avg_loss, state["step"])
+                    writer.add_scalar("train_total_avg_loss", total_avg_loss, state["step"])
 
                     if example_num % args.example_freq == 0:
                         input_centre = torch.mean(x[0, :, model.shapes["output_start_frame"]:model.shapes["output_end_frame"]], 0) # Stereo not supported for logs yet
@@ -157,8 +177,8 @@ def main(args):
     # Test loss
     print("TESTING")
     # Load best model based on validation loss
-    if args.test is None:
-        state = utils.load_model(model, None, state["best_checkpoint"], args.cuda)
+    # if args.test is None:
+    #     state = utils.load_model(model, None, state["best_checkpoint"], args.cuda)
 
     test_loss = validate(args, model, criterion, test_data,writer,state)
     print("TEST FINISHED: LOSS: " + str(test_loss))
@@ -195,6 +215,8 @@ if __name__ == '__main__':
                         help='Dataset path')
     parser.add_argument('--checkpoint_dir', type=str, default='/media/hd03/sutsaiwei_data/Wave-U-Net-Pytorch/checkpoints/snr_waveunet',
                         help='Folder to write checkpoints into')
+    parser.add_argument('--teacher_model', type=str, default='/media/hd03/sutsaiwei_data/Wave-U-Net-Pytorch/backup/2020_snr_unet_origin/checkpoints/checkpoint_33034',
+                        help='load a  pre-trained teacher model')
     parser.add_argument('--load_model', type=str, default=None,
                         help='Reload a previously trained model (whole task model)')
     parser.add_argument('--lr', type=float, default=1e-3,
@@ -203,7 +225,7 @@ if __name__ == '__main__':
                         help='Minimum learning rate in LR cycle (default: 5e-5)')
     parser.add_argument('--cycles', type=int, default=2,
                         help='Number of LR cycles per epoch')
-    parser.add_argument('--batch_size', type=int, default=128,
+    parser.add_argument('--batch_size', type=int, default=32,
                         help="Batch size")
     parser.add_argument('--levels', type=int, default=7,
                         help="Number of DS/US blocks ")
