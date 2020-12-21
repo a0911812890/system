@@ -1,10 +1,11 @@
 import os
-
+import pandas as pd
 import soundfile
 import torch
 import numpy as np
 import librosa
-
+from datetime import date,datetime
+import pickle
 def compute_output(model, inputs):
     '''
     Computes outputs of model with given inputs. Does NOT allow propagating gradients! See compute_loss for training.
@@ -35,22 +36,43 @@ def KD_compute_loss(model,teacher_model, inputs, targets, criterion, compute_gra
     KD_loss = 0
 
     all_outputs = model(inputs)
+    
     teacher_all_outputs = teacher_model(inputs)
 
 
     loss += criterion(all_outputs, targets)
-    KD_loss += criterion(all_outputs, teacher_all_outputs)
-    # print(f'loss={loss} , KD_loss={KD_loss}')
+    KD_loss += criterion(all_outputs, teacher_all_outputs.detach())
+    
     alpha = 0.5
-    total_loss = alpha*0.5*loss + (1-alpha)*0.5*KD_loss
+    total_loss = alpha*loss + (1-alpha)*KD_loss
     if compute_grad:
         total_loss.backward()
+
+    #print(f'loss={loss} , KD_loss={KD_loss} , total={total_loss}')
+
 
     avg_loss = loss.item() / float(len(all_outputs))
     KD_avg_loss = KD_loss.item() / float(len(all_outputs))
     total_avg_loss = total_loss.item() / float(len(all_outputs))
 
     return all_outputs, avg_loss ,KD_avg_loss ,total_avg_loss
+def save_result(data,dir_path,name):
+    
+    with open(os.path.join(dir_path,name+ "_results.pkl"), "wb") as f:
+        pickle.dump(data, f)
+    data = pd.DataFrame(data)
+    data.to_csv(os.path.join(dir_path,name+ "_results.csv"),sep=',')
+
+def args_to_csv(args,dir_path=""):
+    
+    arg = list()
+    if(dir_path==""):
+        dir_path=args.log_dir
+    x=vars(args)
+    for index,data in enumerate(x):
+        arg.append([data,x[data]])
+    arg=pd.DataFrame(arg)
+    arg.to_csv(os.path.join(dir_path,"args.csv"))
 
 def compute_loss(model, inputs, targets, criterion, compute_grad=False):
     '''

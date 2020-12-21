@@ -145,16 +145,24 @@ def evaluate(args, dataset, model):
             dB_list_stoi[text[4]].append([input_stoi,enhance_stoi,enhance_stoi-input_stoi])
             dB_list_name_stoi[text[4]].append([[input_stoi,enhance_stoi,enhance_stoi-input_stoi],example['input']])
 
+
+        pesq_avg = 0
+        stoi_avg = 0
+
         for key, value in dB_list_pesq.items():
             avg_pesq=np.mean(value,0)
             pesq_list=[[avg_pesq[0],avg_pesq[1],avg_pesq[2]],"avg_pesq"]
             dB_list_name_pesq[key].append([pesq_list])
+            pesq_avg+=avg_pesq[1]
 
         for key, value in dB_list_stoi.items():
             avg_stoi=np.mean(value,0)
             stoi_list=[[avg_stoi[0],avg_stoi[1],avg_stoi[2]],"avg_stoi"]
             dB_list_name_stoi[key].append([stoi_list])
-
+            stoi_avg+=avg_stoi[1]
+    dB_list_name_pesq['avg']=pesq_avg/5
+    dB_list_name_stoi['avg']=stoi_avg/5
+    print(f'pesq_avg:{pesq_avg/5} stoi_avg:{stoi_avg/5}')
     return {'pesq' : dB_list_name_pesq ,'stoi' : dB_list_name_stoi}
 
 
@@ -211,20 +219,18 @@ def validate(args, model, criterion, test_data,writer,state):
             pbar.set_description("Current loss: {:.4f}".format(total_loss))
             pbar.update(1)
 
-    print(f'avg_input_pesq={np.nanmean(avg_input_pesq)}')
-    print(f'avg_enhance_pesq={np.nanmean(avg_enhance_pesq)}')
-    print(f'avg_improve_pesq={np.nanmean(avg_improve_pesq)}')
+    print(f'val_input_pesq={np.nanmean(avg_input_pesq)}')
+    print(f'val_enhance_pesq={np.nanmean(avg_enhance_pesq)}')
+    print(f'val_improve_pesq={np.nanmean(avg_improve_pesq)}')
 
-    print(f'avg_input_stoi={np.nanmean(avg_input_stoi)}')
-    print(f'avg_enhance_stoi={np.nanmean(avg_enhance_stoi)}')
-    print(f'avg_improve_stoi={np.nanmean(avg_improve_stoi)}')
+    print(f'val_input_stoi={np.nanmean(avg_input_stoi)}')
+    print(f'val_enhance_stoi={np.nanmean(avg_enhance_stoi)}')
+    print(f'val_improve_stoi={np.nanmean(avg_improve_stoi)}')
 
-    writer.add_scalar("val_input_pesq", np.nanmean(avg_input_pesq), state["epochs"])
     writer.add_scalar("val_enhance_pesq", np.nanmean(avg_enhance_pesq), state["epochs"])
     writer.add_scalar("val_improve_pesq", np.nanmean(avg_improve_pesq), state["epochs"])
 
-    writer.add_scalar("avg_input_stoi", np.nanmean(avg_input_stoi), state["epochs"])
-    writer.add_scalar("avg_enhance_stoi", np.nanmean(avg_enhance_stoi), state["epochs"])
-    writer.add_scalar("avg_improve_stoi", np.nanmean(avg_improve_stoi), state["epochs"])
+    writer.add_scalar("val_enhance_stoi", np.nanmean(avg_enhance_stoi), state["epochs"])
+    writer.add_scalar("val_improve_stoi", np.nanmean(avg_improve_stoi), state["epochs"])
     
     return total_loss
