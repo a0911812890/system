@@ -36,7 +36,7 @@ def main(args):
                     target_output_size=target_outputs, depth=args.depth, strides=args.strides,
                     conv_type=args.conv_type, res=args.res)
 
-    
+    teacher_model=0
     if args.cuda:
         model = utils.DataParallel(model)
         print("move model to gpu")
@@ -85,7 +85,9 @@ def main(args):
 
     # Set up optimiser
     optimizer = Adam(params=model.parameters(), lr=args.lr)
-    # optimizer_teacher = Adam(params=teacher_model.parameters(), lr=args.lr)
+    optimizer_teacher = 0
+    if args.teacher_model is not None:
+        optimizer_teacher = Adam(params=teacher_model.parameters(), lr=args.lr)
     # Set up training state dict that will also be saved into checkpoints
     state = {"step" : 0,
              "worse_epochs" : 0,
@@ -95,7 +97,7 @@ def main(args):
     # load teacher model
     if args.teacher_model is not None :
         print("load teacher model" + str(args.teacher_model))
-        teacher_state = utils.load_model(teacher_model, None, args.teacher_model, args.cuda)
+        teacher_state = utils.load_model(teacher_model, optimizer, args.teacher_model, args.cuda)
         
 
     # LOAD MODEL CHECKPOINT IF DESIRED
@@ -105,7 +107,7 @@ def main(args):
 
     if args.test is False:
         print('TRAINING START')
-        while state["worse_epochs"] < args.patience  and state["epochs"] < 150:
+        while state["epochs"] < 350:#state["worse_epochs"] < args.patience  and 
             print("epoch:"+str(state["epochs"]))
             print("Training one epoch from iteration " + str(state["step"]))
             avg_time = 0.
@@ -121,15 +123,31 @@ def main(args):
 
                     # Set LR for this iteration
                     utils.set_cyclic_lr(optimizer, example_num, len(train_data) // args.batch_size, args.cycles, args.min_lr, args.lr)
+                    #utils.set_cyclic_lr(optimizer_teacher, example_num, len(train_data) // args.batch_size, args.cycles, args.min_lr, args.lr)
                     writer.add_scalar("lr", utils.get_lr(optimizer), state["step"])
-
                     # Compute loss for model
+                    after_epochs=50
+                    model.train()
+                    teacher_model.eval()
                     optimizer.zero_grad()
                     if args.teacher_model is not None:
-                        outputs, avg_loss ,KD_avg_loss ,total_avg_loss = utils.KD_compute_loss(model,teacher_model, x, targets, criterion, compute_grad=True)
+                        outputs, student_avg_loss ,teacher_avg_loss ,student_total_avg_loss  = utils.KD_compute_loss(model,teacher_model, x, targets, criterion,'student',state["epochs"],after_epochs,compute_grad=True)
                     else:
-                        outputs, avg_loss = utils.compute_loss(model, x, targets, criterion, compute_grad=True)
+                        outputs, student_avg_loss = utils.compute_loss(model, x, targets, criterion, compute_grad=True)
                     optimizer.step()
+
+                    
+                    
+                    teacher_total_avg_loss = teacher_avg_loss
+                    if args.teacher_model is not None and state["epochs"] >= after_epochs :
+                        model.eval()
+                        teacher_model.train()
+                        optimizer_teacher.zero_grad()
+                        _, _,_,teacher_total_avg_loss = utils.KD_compute_loss(model,teacher_model, x, targets, criterion,'teacher',state["epochs"],after_epochs,compute_grad=True)
+                        optimizer_teacher.step()
+                        
+
+                    
 
                     state["step"] += 1
 
@@ -137,11 +155,12 @@ def main(args):
                     avg_time += (1. / float(example_num + 1)) * (t - avg_time)
 
                     if args.teacher_model is not None:
-                        writer.add_scalar("train_avg_loss", avg_loss, state["step"])
-                        writer.add_scalar("train_KD_avg_loss", KD_avg_loss, state["step"])
-                        writer.add_scalar("train_total_avg_loss", total_avg_loss, state["step"])
+                        writer.add_scalar("train_student_avg_loss", student_avg_loss, state["step"])
+                        writer.add_scalar("train_teacher_avg_loss", teacher_avg_loss, state["step"])
+                        writer.add_scalar("train_student_total_avg_loss", student_total_avg_loss, state["step"])
+                        writer.add_scalar("train_total_avg_loss", teacher_total_avg_loss, state["step"])
                     else:
-                        writer.add_scalar("train_avg_loss", avg_loss, state["step"])
+                        writer.add_scalar("train_student_avg_loss", student_avg_loss, state["step"])
 
                     if example_num % args.example_freq == 0:
                         input_centre = torch.mean(x[0, :, model.shapes["output_start_frame"]:model.shapes["output_end_frame"]], 0) # Stereo not supported for logs yet
@@ -168,6 +187,7 @@ def main(args):
 
             # EARLY STOPPING CHECK
             checkpoint_path = os.path.join(args.checkpoint_dir, "checkpoint_" + str(state["epochs"]))
+            teacher_checkpoint_path = os.path.join(args.checkpoint_dir, "teacher_checkpoint_" + str(state["epochs"]))
             if val_loss >= state["best_loss"]:
                 state["worse_epochs"] += 1
             else:
@@ -179,7 +199,8 @@ def main(args):
             # CHECKPOINT
             print("Saving model...")
             utils.save_model(model, optimizer, state, checkpoint_path)
-
+            if args.teacher_model is not None:
+                utils.save_model(teacher_model, optimizer, state, teacher_checkpoint_path)
             state["epochs"] += 1
 
     #### TESTING ####
@@ -216,7 +237,7 @@ def main(args):
 if __name__ == '__main__':
     ## TRAIN PARAMETERS
     model_base_path='/media/hd03/sutsaiwei_data/Wave-U-Net-Pytorch/model'
-    model_name = "test"
+    model_name = "myKD_afterepochs_50"
     parser = argparse.ArgumentParser()
     parser.add_argument('--cuda', action='store_true',
                         help='Use CUDA (default: False)')

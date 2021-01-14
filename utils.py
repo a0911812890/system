@@ -19,7 +19,7 @@ def compute_output(model, inputs):
 
     return all_outputs
 
-def KD_compute_loss(model,teacher_model, inputs, targets, criterion, compute_grad=False):
+def KD_compute_loss(model,teacher_model, inputs, targets, criterion,model_type,epochs,after_epochs, compute_grad=False):
     '''
     Computes gradients of model with given inputs and targets and loss function.
     Optionally backpropagates to compute gradients for weights.
@@ -32,30 +32,40 @@ def KD_compute_loss(model,teacher_model, inputs, targets, criterion, compute_gra
     :return: Model outputs, Average loss over batch
     '''
     
-    loss = 0
+    student_loss = 0
     KD_loss = 0
-
-    all_outputs = model(inputs)
+    teacher_loss = 0
     
+    student_all_outputs = model(inputs)
     teacher_all_outputs = teacher_model(inputs)
 
 
-    loss += criterion(all_outputs, targets)
-    KD_loss += criterion(all_outputs, teacher_all_outputs.detach())
-    
-    alpha = 0.5
-    total_loss = alpha*loss + (1-alpha)*KD_loss
+    student_loss = criterion(student_all_outputs, targets)
+    teacher_loss = criterion(teacher_all_outputs, targets)
+    KD_loss = criterion(student_all_outputs, teacher_all_outputs)
+
+    temp= (epochs-(after_epochs-1))
+    alpha = min(temp/100,1)
+    alpha = max(alpha,0)
+    if model_type=='teacher':
+        total_loss = (1-alpha)*teacher_loss + alpha*KD_loss
+    else :
+        total_loss = alpha*student_loss + (1-alpha)*KD_loss
     if compute_grad:
         total_loss.backward()
 
-    #print(f'loss={loss} , KD_loss={KD_loss} , total={total_loss}')
+    student_avg_loss = student_loss.item() / float(len(student_all_outputs))
+    teacher_avg_loss = teacher_loss.item() / float(len(student_all_outputs))
+    KD_avg_loss = KD_loss.item() / float(len(student_all_outputs))
+    total_avg_loss = total_loss.item() / float(len(student_all_outputs))
+
+    #print(f'{model_type} alpha={alpha}  student={student_loss} , teacher={teacher_loss} ,KD_loss={KD_avg_loss} , total={total_loss} ')
+    if model_type=='teacher':
+        return teacher_all_outputs, student_avg_loss ,teacher_avg_loss ,total_avg_loss
+    else:
+        return student_all_outputs, student_avg_loss ,teacher_avg_loss ,total_avg_loss
 
 
-    avg_loss = loss.item() / float(len(all_outputs))
-    KD_avg_loss = KD_loss.item() / float(len(all_outputs))
-    total_avg_loss = total_loss.item() / float(len(all_outputs))
-
-    return all_outputs, avg_loss ,KD_avg_loss ,total_avg_loss
 def save_result(data,dir_path,name):
     
     with open(os.path.join(dir_path,name+ "_results.pkl"), "wb") as f:
