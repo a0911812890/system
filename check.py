@@ -41,16 +41,16 @@ from pystoi import stoi
     # print(np.array_equal(y, y2))
 
 
-path='/media/hd03/sutsaiwei_data/Wave-U-Net-Pytorch/audio_examples/400000'
-target, curr_sr = librosa.load(os.path.join(path,'target.wav'), sr=16000, mono=True)
-enhance, curr_sr = librosa.load(os.path.join(path,'enhance.wav'), sr=16000, mono=True)
-noisy, curr_sr = librosa.load(os.path.join(path,'noisy.wav'), sr=16000, mono=True)
-d = stoi(target, noisy, 16000, extended=False)
-d2 = stoi(target, enhance, 16000, extended=False)
-print(d,d2)
-# print(type(pesq( target, target,16000)))
-print(pesq( target, enhance,16000))
-print(pesq( target, noisy,16000))
+# path='/media/hd03/sutsaiwei_data/Wave-U-Net-Pytorch/audio_examples/400000'
+# target, curr_sr = librosa.load(os.path.join(path,'target.wav'), sr=16000, mono=True)
+# enhance, curr_sr = librosa.load(os.path.join(path,'enhance.wav'), sr=16000, mono=True)
+# noisy, curr_sr = librosa.load(os.path.join(path,'noisy.wav'), sr=16000, mono=True)
+# d = stoi(target, noisy, 16000, extended=False)
+# d2 = stoi(target, enhance, 16000, extended=False)
+# print(d,d2)
+# # print(type(pesq( target, target,16000)))
+# print(pesq( target, enhance,16000))
+# print(pesq( target, noisy,16000))
 # print(pesq(16000, target, target,'wb'))
 # print(pesq(16000, target, enhance,'wb'))
 # print(pesq(16000, target, noisy,'wb'))
@@ -60,5 +60,7 @@ print(pesq( target, noisy,16000))
 
 
 
+from torch.utils.tensorboard import SummaryWriter
+from tensorflow.python.summary.summary_iterator import summary_iterator
 
-        
+for summary in tf.train.summary_iterator("/path/to/log/file"):

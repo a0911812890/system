@@ -6,6 +6,9 @@ import numpy as np
 import librosa
 from datetime import date,datetime
 import pickle
+import torch
+import torch.nn as nn
+from pypesq import pesq
 def compute_output(model, inputs):
     '''
     Computes outputs of model with given inputs. Does NOT allow propagating gradients! See compute_loss for training.
@@ -19,70 +22,63 @@ def compute_output(model, inputs):
 
     return all_outputs
 
-def KD_compute_loss(model,teacher_model, inputs, targets, criterion,model_type,epochs,after_epochs, compute_grad=False):
-    '''
-    Computes gradients of model with given inputs and targets and loss function.
-    Optionally backpropagates to compute gradients for weights.
-    Procedure depends on whether we have one model for each source or not
-    :param model: Model to train with
-    :param inputs: Input mixture
-    :param targets: Target sources
-    :param criterion: Loss function to use (L1, L2, ..)
-    :param compute_grad: Whether to compute gradients
-    :return: Model outputs, Average loss over batch
-    '''
+def KD_compute_loss(model,teacher_model, inputs, targets, criterion,alpha=0.5, compute_grad=False):
     
     student_loss = 0
     KD_loss = 0
-    teacher_loss = 0
     
     student_all_outputs = model(inputs)
     teacher_all_outputs = teacher_model(inputs)
 
+    # input_centre = torch.mean(x[0, :, model.shapes["output_start_frame"]:model.shapes["output_end_frame"]], 0) # Stereo not supported for logs yet    
+    # target=torch.mean(targets[0], 0).cpu().numpy()
+    # pred1=torch.mean(student_all_outputs[0], 0).detach().cpu().numpy()
+    # pred2=torch.mean(teacher_all_outputs[0], 0).detach().cpu().numpy()
+    # inputs=input_centre.cpu().numpy()
+
+    # values1=round(pesq(target,inputs,16000),5)
+    # values2=round(pesq(target,pred1 ,16000),5)
+    # values3=round(pesq(target,pred2 ,16000),5)
 
     student_loss = criterion(student_all_outputs, targets)
-    teacher_loss = criterion(teacher_all_outputs, targets)
     KD_loss = criterion(student_all_outputs, teacher_all_outputs)
+    total_loss = (1-alpha)*student_loss + alpha*KD_loss
 
-    temp= (epochs-(after_epochs-1))
-    alpha = min(temp/100,1)
-    alpha = max(alpha,0)
-    if model_type=='teacher':
-        total_loss = (1-alpha)*teacher_loss + alpha*KD_loss
-    else :
-        total_loss = alpha*student_loss + (1-alpha)*KD_loss
     if compute_grad:
         total_loss.backward()
 
     student_avg_loss = student_loss.item() / float(len(student_all_outputs))
-    teacher_avg_loss = teacher_loss.item() / float(len(student_all_outputs))
-    KD_avg_loss = KD_loss.item() / float(len(student_all_outputs))
     total_avg_loss = total_loss.item() / float(len(student_all_outputs))
-
-    #print(f'{model_type} alpha={alpha}  student={student_loss} , teacher={teacher_loss} ,KD_loss={KD_avg_loss} , total={total_loss} ')
-    if model_type=='teacher':
-        return teacher_all_outputs, student_avg_loss ,teacher_avg_loss ,total_avg_loss
-    else:
-        return student_all_outputs, student_avg_loss ,teacher_avg_loss ,total_avg_loss
+    #KD_avg_loss = KD_loss.item() / float(len(student_all_outputs))
+    return student_all_outputs, student_avg_loss  ,total_avg_loss 
 
 
-def save_result(data,dir_path,name):
+
+
+def RL_compute_loss(RL_alpha_array, reward,criterion):
+    sign=0
+    # value=(1e-6)/diff
+    label = torch.zeros(len(RL_alpha_array),1)
+    for i in range(len(label)):
+        if reward>0:
+            label[i][0]=1
+            sign=1
+        else:
+            label[i][0]=0
+            sign=-1
     
-    with open(os.path.join(dir_path,name+ "_results.pkl"), "wb") as f:
-        pickle.dump(data, f)
-    data = pd.DataFrame(data)
-    data.to_csv(os.path.join(dir_path,name+ "_results.csv"),sep=',')
+    label = label.cuda()
+    loss = criterion(RL_alpha_array, label)
 
-def args_to_csv(args,dir_path=""):
+    reward=np.abs(reward)
+    reward=KD_normalize(reward)
+    #print(f'reward={reward}')
+  
+    loss = loss*reward
+    loss.backward()
     
-    arg = list()
-    if(dir_path==""):
-        dir_path=args.log_dir
-    x=vars(args)
-    for index,data in enumerate(x):
-        arg.append([data,x[data]])
-    arg=pd.DataFrame(arg)
-    arg.to_csv(os.path.join(dir_path,"args.csv"))
+    sign_normalize_reward=sign*reward
+    return loss,sign_normalize_reward
 
 def compute_loss(model, inputs, targets, criterion, compute_grad=False):
     '''
@@ -106,6 +102,29 @@ def compute_loss(model, inputs, targets, criterion, compute_grad=False):
 
     return all_outputs, avg_loss
 
+def KD_normalize(inputs,MAX=8*10e-5 , MIN=0):
+    if inputs<10e-9:
+        inputs=10e-9
+    return (inputs-MIN)/(MAX-MIN)
+
+
+def save_result(data,dir_path,name):
+    
+    with open(os.path.join(dir_path,name+ "_results.pkl"), "wb") as f:
+        pickle.dump(data, f)
+    data = pd.DataFrame(data)
+    data.to_csv(os.path.join(dir_path,name+ "_results.csv"),sep=',')
+
+def args_to_csv(args,dir_path=""):
+    
+    arg = list()
+    if(dir_path==""):
+        dir_path=args.log_dir
+    x=vars(args)
+    for index,data in enumerate(x):
+        arg.append([data,x[data]])
+    arg=pd.DataFrame(arg)
+    arg.to_csv(os.path.join(dir_path,"args.csv"))
 def worker_init_fn(worker_id): # This is apparently needed to ensure workers have different random seeds and draw different examples!
     np.random.seed(np.random.get_state()[1][0] + worker_id)
 

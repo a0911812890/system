@@ -204,3 +204,4 @@ class ConvLayer(nn.Module):
             curr_size = ((curr_size - 1) // self.stride) + 1
 
         return curr_size
+
