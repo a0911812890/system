@@ -8,19 +8,12 @@ import random
 from pypesq import pesq
 from utils import compute_loss
 from pystoi import stoi
-def predict(audio, model):
-    if isinstance(audio, torch.Tensor):
-        is_cuda = audio.is_cuda()
-        audio = audio.detach().cpu().numpy()
-        return_mode = "pytorch"
-    else:
-        return_mode = "numpy"
-
+def pad_data(audio, model):
     # audio.shape[1] 語音長度
     expected_outputs = audio.shape[1] #預期輸出
     # Pad input if it is not divisible in length by the frame shift number
     output_shift = model.shapes["output_frames"] # 模型每次輸出大小
-    pad_back = audio.shape[1] % output_shift # 長度不夠時pad
+    pad_back = audio.shape[1] % output_shift # 長度不夠時
     pad_back = 0 if pad_back == 0 else output_shift - pad_back
     if pad_back > 0:
         audio = np.pad(audio, [(0,0), (0, pad_back)], mode="constant", constant_values=0.0) # 補在後面
@@ -34,7 +27,56 @@ def predict(audio, model):
     pad_back_context = model.shapes["input_frames"] - model.shapes["output_end_frame"]
     
     audio = np.pad(audio, [(0,0), (pad_front_context, pad_back_context)], mode="constant", constant_values=0.0)
-    print('完成',audio.shape[1])
+    # print('完成',audio.shape[1])
+    # Iterate over mixture magnitudes, fetch network prediction
+    with torch.no_grad():
+        for target_start_pos in range(0, target_outputs, model.shapes["output_frames"]):
+
+            # Prepare mixture excerpt by selecting time interval
+            curr_input = audio[:, target_start_pos:target_start_pos + model.shapes["input_frames"]] # Since audio was front-padded input of [targetpos:targetpos+inputframes] actually predicts [targetpos:targetpos+outputframes] target range
+
+            # Convert to Pytorch tensor for model prediction
+            curr_input = torch.from_numpy(curr_input).unsqueeze(0)
+
+            # Predict
+            Predict_output = utils.compute_output(model, curr_input) #
+            outputs[:,target_start_pos:target_start_pos+model.shapes["output_frames"]]=Predict_output.squeeze(0).cpu().numpy() #
+
+
+    outputs = outputs[:,:expected_outputs]# 切回原來大小
+
+    if return_mode == "pytorch":
+        outputs = torch.from_numpy(outputs)
+        if is_cuda:
+            outputs = outputs.cuda()
+    return outputs
+def predict(audio, model):
+    if isinstance(audio, torch.Tensor):
+        is_cuda = audio.is_cuda()
+        audio = audio.detach().cpu().numpy()
+        return_mode = "pytorch"
+    else:
+        return_mode = "numpy"
+
+    # audio.shape[1] 語音長度
+    expected_outputs = audio.shape[1] #預期輸出
+    # Pad input if it is not divisible in length by the frame shift number
+    output_shift = model.shapes["output_frames"] # 模型每次輸出大小
+    pad_back = audio.shape[1] % output_shift # 長度不夠時
+    pad_back = 0 if pad_back == 0 else output_shift - pad_back
+    if pad_back > 0:
+        audio = np.pad(audio, [(0,0), (0, pad_back)], mode="constant", constant_values=0.0) # 補在後面
+    target_outputs = audio.shape[1]
+    
+    outputs = np.zeros(audio.shape, np.float32) # outputs=最後輸出
+    
+    # Pad mixture across time at beginning and end so that neural network can make prediction at the beginning and end of signal
+    pad_front_context = model.shapes["output_start_frame"] # 原模型會使得大小便小 所以需要pad
+    
+    pad_back_context = model.shapes["input_frames"] - model.shapes["output_end_frame"]
+    
+    audio = np.pad(audio, [(0,0), (pad_front_context, pad_back_context)], mode="constant", constant_values=0.0)
+    # print('完成',audio.shape[1])
     # Iterate over mixture magnitudes, fetch network prediction
     with torch.no_grad():
         for target_start_pos in range(0, target_outputs, model.shapes["output_frames"]):
@@ -107,63 +149,92 @@ def predict_song(args, audio_path, model):
     return sources
 
 def evaluate(args, dataset, model):
-    dB_list_pesq = {'-10' : list() ,'-5' : list() ,'0' : list() ,'5' : list() ,'10' : list() }
-    dB_list_name_pesq = {'-10' : list() ,'-5' : list() ,'0' : list() ,'5' : list() ,'10' : list() }
 
-    dB_list_stoi = {'-10' : list() ,'-5' : list() ,'0' : list() ,'5' : list() ,'10' : list() }
-    dB_list_name_stoi = {'-10' : list() ,'-5' : list() ,'0' : list() ,'5' : list() ,'10' : list() }
+    dB_list_pesq=dict();dB_list_name_pesq=dict();dB_list_stoi=dict();dB_list_name_stoi=dict()
+    if args.outside_test :
+        for i in ['-7.5' ,'-2.5' ,'2.5' ,'7.5' ]:
+            dB_list_pesq[i] = list()
+            dB_list_name_pesq[i] = list()
+
+            dB_list_stoi[i] = list()
+            dB_list_name_stoi[i] = list()
+            test_noise_file="outside_test/noise"
+    else:
+        for i in ['-10','-5' ,'0' ,'5' ,'10' ]:
+            dB_list_pesq[i] = list()
+            dB_list_name_pesq[i] = list()
+
+            dB_list_stoi[i] = list()
+            dB_list_name_stoi[i] = list()
+            test_noise_file="test/noise"
+    noise_dir=os.path.join(args.dataset_dir,test_noise_file)
+    noise_file = os.listdir(noise_dir)
+    dB_noise_pesq = {}
+    for i in noise_file:
+        dB_noise_pesq[os.path.splitext(i)[0]]=list()
+    
     model.eval()
     with torch.no_grad():
-        for example in dataset:
-            print("Evaluating " + example["input"])
+        with tqdm(total=len(dataset)) as pbar:
+            for example in dataset:
+                # Load source references in their original sr and channel number
+                target_sources = utils.load(example['target'], sr=16000, mono=True)[0].flatten()
+                input_sources = utils.load(example['input'], sr=16000, mono=True)[0].flatten()
 
-            # Load source references in their original sr and channel number
-            target_sources = utils.load(example['target'], sr=16000, mono=True)[0].flatten()
-            input_sources = utils.load(example['input'], sr=16000, mono=True)[0].flatten()
+                # Predict using mixture
+                pred_sources  = predict_song(args, example["input"], model).flatten()
+                # print(f'type : target_sources:{type(target_sources)} pred_sources:{type(pred_sources)}')
+                # print(f'shape : target_sources:{target_sources.shape} pred_sources:{pred_sources.shape} ')
+                output_folder = args.output
+                file_name=os.path.basename(example['input'])
+                # utils.write_wav(os.path.join(output_folder,'enhance_'+file_name), pred_sources.T, args.sr)
+                fname,ext = os.path.splitext(file_name)
+                text=fname.split("_",4)
+                # Evaluate pesq
+                input_pesq=round(pesq(target_sources, input_sources,16000),2)
+                enhance_pesq=round(pesq(target_sources, pred_sources ,16000),2)
 
-            # Predict using mixture
-            pred_sources  = predict_song(args, example["input"], model).flatten()
-            # print(f'type : target_sources:{type(target_sources)} pred_sources:{type(pred_sources)}')
-            # print(f'shape : target_sources:{target_sources.shape} pred_sources:{pred_sources.shape} ')
-            output_folder = args.output
-            file_name=os.path.basename(example['input'])
-            utils.write_wav(os.path.join(output_folder,'enhance_'+file_name), pred_sources.T, args.sr)
-            fname,ext = os.path.splitext(file_name)
-            text=fname.split("_",4)
-            # Evaluate pesq
-            input_pesq=round(pesq(target_sources, input_sources,16000),2)
-            enhance_pesq=round(pesq(target_sources, pred_sources ,16000),2)
+                # Evaluate stoi
+                input_stoi = stoi(target_sources, input_sources, 16000, extended=False)
+                enhance_stoi = stoi(target_sources, pred_sources, 16000, extended=False)
+                # print(f'input_pesq:{input_pesq} enhance_pesq:{enhance_pesq} improve_pesq:{enhance_pesq-input_pesq} ')
+                filename=os.path.basename(example['input'])
+                noise_name=filename.split("_")[0]
+                dB_noise_pesq[noise_name].append([input_pesq,enhance_pesq,enhance_pesq-input_pesq])
+                #print(noise_name)
+                dB_list_pesq[text[4]].append([input_pesq,enhance_pesq,enhance_pesq-input_pesq])
+                dB_list_name_pesq[text[4]].append([[input_pesq,enhance_pesq,enhance_pesq-input_pesq],example['input']])
 
-            # Evaluate stoi
-            input_stoi = stoi(target_sources, input_sources, 16000, extended=False)
-            enhance_stoi = stoi(target_sources, pred_sources, 16000, extended=False)
-            # print(f'input_pesq:{input_pesq} enhance_pesq:{enhance_pesq} improve_pesq:{enhance_pesq-input_pesq} ')
-            
-            dB_list_pesq[text[4]].append([input_pesq,enhance_pesq,enhance_pesq-input_pesq])
-            dB_list_name_pesq[text[4]].append([[input_pesq,enhance_pesq,enhance_pesq-input_pesq],example['input']])
-
-            dB_list_stoi[text[4]].append([input_stoi,enhance_stoi,enhance_stoi-input_stoi])
-            dB_list_name_stoi[text[4]].append([[input_stoi,enhance_stoi,enhance_stoi-input_stoi],example['input']])
-
+                dB_list_stoi[text[4]].append([input_stoi,enhance_stoi,enhance_stoi-input_stoi])
+                dB_list_name_stoi[text[4]].append([[input_stoi,enhance_stoi,enhance_stoi-input_stoi],example['input']])
+                pbar.update(1)
 
         pesq_avg = 0
         stoi_avg = 0
-
+        improve_pesq =0
         for key, value in dB_list_pesq.items():
             avg_pesq=np.mean(value,0)
             pesq_list=[[avg_pesq[0],avg_pesq[1],avg_pesq[2]],"avg_pesq"]
             dB_list_name_pesq[key].append([pesq_list])
             pesq_avg+=avg_pesq[1]
-
+            improve_pesq+=avg_pesq[2]
         for key, value in dB_list_stoi.items():
             avg_stoi=np.mean(value,0)
             stoi_list=[[avg_stoi[0],avg_stoi[1],avg_stoi[2]],"avg_stoi"]
             dB_list_name_stoi[key].append([stoi_list])
             stoi_avg+=avg_stoi[1]
-    dB_list_name_pesq['avg']=pesq_avg/5
-    dB_list_name_stoi['avg']=stoi_avg/5
-    print(f'pesq_avg:{pesq_avg/5} stoi_avg:{stoi_avg/5}')
-    return {'pesq' : dB_list_name_pesq ,'stoi' : dB_list_name_stoi}
+        noise_avg=list()
+        for key, value in dB_noise_pesq.items():
+            avg_pesq=np.mean(value,0)
+            noise_avg.append([key,avg_pesq])
+            # if key==dB_noise_pesq.keys[-1]:
+            #     print(noise_avg)
+    print(noise_avg)
+    num=len(dB_list_pesq)
+    dB_list_name_pesq['avg']=pesq_avg/num
+    dB_list_name_stoi['avg']=stoi_avg/num
+    print(f'pesq_avg:{pesq_avg/num} stoi_avg:{stoi_avg/num} improve_pesq:{improve_pesq/num}')
+    return {'pesq' : dB_list_name_pesq ,'stoi' : dB_list_name_stoi,'noise':noise_avg}
 
 
 def validate(args, model, criterion, test_data,writer,state):
@@ -218,14 +289,14 @@ def validate(args, model, criterion, test_data,writer,state):
             # print(values1,values2,values2 -values1)
             pbar.set_description("Current loss: {:.4f}".format(total_loss))
             pbar.update(1)
-
-    print(f'val_input_pesq={np.nanmean(avg_input_pesq)}')
-    print(f'val_enhance_pesq={np.nanmean(avg_enhance_pesq)}')
-    print(f'val_improve_pesq={np.nanmean(avg_improve_pesq)}')
-
-    print(f'val_input_stoi={np.nanmean(avg_input_stoi)}')
-    print(f'val_enhance_stoi={np.nanmean(avg_enhance_stoi)}')
-    print(f'val_improve_stoi={np.nanmean(avg_improve_stoi)}')
+    val_enhance_pesq=np.nanmean(avg_enhance_pesq)
+    val_improve_pesq=np.nanmean(avg_improve_pesq)
+    val_enhance_stoi=np.nanmean(val_enhance_stoi)
+    val_improve_stoi=np.nanmean(val_improve_stoi)
+    print(f'val_enhance_pesq={val_enhance_pesq}')
+    print(f'val_improve_pesq={val_improve_pesq}')
+    print(f'val_enhance_stoi={val_enhance_stoi}')
+    print(f'val_improve_stoi={val_improve_stoi}')
 
     writer.add_scalar("val_enhance_pesq", np.nanmean(avg_enhance_pesq), state["epochs"])
     writer.add_scalar("val_improve_pesq", np.nanmean(avg_improve_pesq), state["epochs"])
@@ -233,4 +304,4 @@ def validate(args, model, criterion, test_data,writer,state):
     writer.add_scalar("val_enhance_stoi", np.nanmean(avg_enhance_stoi), state["epochs"])
     writer.add_scalar("val_improve_stoi", np.nanmean(avg_improve_stoi), state["epochs"])
     
-    return total_loss
+    return total_loss,[val_enhance_pesq,val_improve_pesq,val_enhance_stoi,val_improve_stoi]

@@ -101,7 +101,7 @@ class SeparationDataset(Dataset):
             self.hdf_dataset = h5py.File(self.hdf_dir, 'r', driver=driver)
         
         # Find out which slice of targets we want to read
-        audio_idx = self.start_pos.bisect_right(index) # 根據index 看是哪個音檔 回頭找到他的 audio_idx
+        audio_idx = self.start_pos.bisect_right(index) # 根據index 看是哪個音檔 回頭找到他的 audio_idx 0,1,3,5,8,10,11
         
         if audio_idx > 0: # 
             index = index - self.start_pos[audio_idx - 1] # 看是在這個音檔的哪個片段
@@ -115,7 +115,7 @@ class SeparationDataset(Dataset):
             start_target_pos = np.random.randint(0, max(target_length - self.shapes["output_frames"] + 1, 1))
         else:
             # Map item index to sample position within song
-            start_target_pos = index * self.shapes["output_frames"]
+            start_target_pos = index * self.shapes["output_frames"] # 第幾個片段
 
         # READ INPUTS
         # Check front padding
@@ -146,7 +146,6 @@ class SeparationDataset(Dataset):
         if pad_front > 0 or pad_back > 0:
             target = np.pad(target, [(0, 0), (pad_front, pad_back)], mode="constant", constant_values=0.0)
 
-        # targets = {inst : targets[idx*self.channels:(idx+1)*self.channels] for idx, inst in enumerate(self.instruments)}
 
         if hasattr(self, "audio_transform") and self.audio_transform is not None:
             audio, target = self.audio_transform(audio, target)
@@ -157,25 +156,30 @@ class SeparationDataset(Dataset):
         return self.length
 
 #------------------------------Myself------------------------------#
-def get_folds(database_path):
-    path = database_path
+def get_folds(database_path,outside_test):
+    database_path = database_path
     subsets = list()
-    for subset in ["train","val", "test"]:
+    if outside_test:
+        subset_types = ["train","outside_test", "outside_test"]
+    else:
+        subset_types = ["train","test", "test"]
+    for subset_type in subset_types:
         noisy_wav='noisy'
         speech_wav='speech'
-        all_path=os.path.join(path,subset,noisy_wav,'wav')
-        # all_path=path+'/'+subset+'/'+noisy_wav+'/wav/'
+        noisy_path=os.path.join(database_path,subset_type,'noisy')
+        speech_path=os.path.join(database_path,subset_type,'speech')
+        # all_path=database_path+'/'+subset+'/'+noisy_wav+'/wav/'
         samples = list()
-        noisy_list=os.listdir(all_path)
+        noisy_list=os.listdir(noisy_path)
         for i in range(len(noisy_list)):
-            t=noisy_list[i].split("_",4)
-            target_path=os.path.join(path,subset,speech_wav,'wav',t[1]+"_"+t[2]+"_"+t[3]+".wav")
-            # target_path=path+'/'+subset+'/'+speech_wav+'/wav/'+t[1]+"_"+t[2]+"_"+t[3]+".wav"
-            pair={"input" :os.path.join(all_path,noisy_list[i]),"target" : target_path }
+            noisy_file_name=noisy_list[i].split("_",4)
+            target_path=os.path.join(speech_path,noisy_file_name[1]+"_"+noisy_file_name[2]+"_"+noisy_file_name[3]+".wav")
+            input_path=os.path.join(noisy_path,noisy_list[i])
+            pair={"input" :input_path ,"target" : target_path }
             samples.append(pair)
         subsets.append(samples)
     data={'train' : subsets[0],'val' : subsets[1],  'test' : subsets[2]}
-    print(f'all train song:{(len(subsets[0]))} all val song:{(len(subsets[1]))}  all test song:{(len(subsets[2]))} ')
+    # print(f'all train song:{(len(subsets[0]))} all val song:{(len(subsets[1]))}  all test song:{(len(subsets[2]))} ')
     return data
 
 #------------------------------unuse------------------------------#

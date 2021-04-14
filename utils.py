@@ -8,90 +8,80 @@ from datetime import date,datetime
 import pickle
 import torch
 import torch.nn as nn
+from Loss import customLoss,RL_customLoss
 from pypesq import pesq
 def compute_output(model, inputs):
-    '''
-    Computes outputs of model with given inputs. Does NOT allow propagating gradients! See compute_loss for training.
-    Procedure depends on whether we have one model for each source or not
-    :param model: Model to train with
-    :param compute_grad: Whether to compute gradients
-    :return: Model outputs, Average loss over batch
-    '''
-
     all_outputs = model(inputs)
 
     return all_outputs
 
-def KD_compute_loss(model,teacher_model, inputs, targets, criterion,alpha=0.5, compute_grad=False):
-    
-    student_loss = 0
-    KD_loss = 0
-    
+def KD_compute_loss(model,teacher_model, inputs, targets, criterion,alpha, compute_grad=False):
     student_all_outputs = model(inputs)
-    teacher_all_outputs = teacher_model(inputs)
+    teacher_all_outputs = teacher_model(inputs).detach()
 
-    # input_centre = torch.mean(x[0, :, model.shapes["output_start_frame"]:model.shapes["output_end_frame"]], 0) # Stereo not supported for logs yet    
-    # target=torch.mean(targets[0], 0).cpu().numpy()
-    # pred1=torch.mean(student_all_outputs[0], 0).detach().cpu().numpy()
-    # pred2=torch.mean(teacher_all_outputs[0], 0).detach().cpu().numpy()
-    # inputs=input_centre.cpu().numpy()
+    student_loss = criterion(student_all_outputs,targets,1-alpha) #####################################
+    KD_loss = criterion(student_all_outputs, teacher_all_outputs,alpha)
 
-    # values1=round(pesq(target,inputs,16000),5)
-    # values2=round(pesq(target,pred1 ,16000),5)
-    # values3=round(pesq(target,pred2 ,16000),5)
-
-    student_loss = criterion(student_all_outputs, targets)
-    KD_loss = criterion(student_all_outputs, teacher_all_outputs)
-    total_loss = (1-alpha)*student_loss + alpha*KD_loss
+    total_loss = student_loss + KD_loss
 
     if compute_grad:
         total_loss.backward()
 
     student_avg_loss = student_loss.item() / float(len(student_all_outputs))
     total_avg_loss = total_loss.item() / float(len(student_all_outputs))
-    #KD_avg_loss = KD_loss.item() / float(len(student_all_outputs))
-    return student_all_outputs, student_avg_loss  ,total_avg_loss 
+    KD_avg_loss = KD_loss.item() / float(len(student_all_outputs))
+    return student_all_outputs, student_avg_loss  ,total_avg_loss ,KD_loss
 
 
+def reward_norm(MAX_value,MIN_value,reward):
+    for i in range(len(reward)):
+        if torch.abs(reward[i])<MIN_value:
+            reward[i]=0
+            print('reward too small ')
+        if torch.abs(reward[i])>MAX_value:
+            print('reward too big ')
+            if(reward[i]>0):
+                reward[i]=MAX_value
+            else:
+                reward[i]=-MAX_value
+    return reward
 
-
-def RL_compute_loss(RL_alpha_array, reward,criterion):
-    sign=0
-    # value=(1e-6)/diff
-    label = torch.zeros(len(RL_alpha_array),1)
-    for i in range(len(label)):
-        if reward>0:
-            label[i][0]=1
-            sign=1
-        else:
-            label[i][0]=0
-            sign=-1
-    
+def RL_compute_loss(RL_alpha,max_value,min_value, reward,criterion):
+    label = torch.zeros(len(RL_alpha),1)
     label = label.cuda()
-    loss = criterion(RL_alpha_array, label)
-
-    reward=np.abs(reward)
-    reward=KD_normalize(reward)
-    #print(f'reward={reward}')
-  
-    loss = loss*reward
+    modify_reward=reward
+    # modify_reward=reward_norm(max_value,min_value,reward)
+    for i in range(len(label)):
+        label[i]=RL_alpha[i].detach()+modify_reward[i] # 如果R>0
+        if label[i]>1:
+            label[i]=1
+        elif label[i]<0:
+            label[i]=0
+    loss = criterion(RL_alpha, label)
     loss.backward()
-    
-    sign_normalize_reward=sign*reward
-    return loss,sign_normalize_reward
+    return loss
+
+
+def loss_for_sample(model, inputs, targets):
+    loss = 0
+    with torch.no_grad():
+        all_outputs = model(inputs).detach()
+        loss = torch.mean(torch.pow((all_outputs-targets),2),2)/len(all_outputs)
+    return all_outputs,loss
+
+
+def MY_compute_loss(model, inputs, targets, criterion, compute_grad=False):
+    loss = 0
+    all_outputs = model(inputs)
+    loss += criterion(all_outputs, targets,1)
+    if compute_grad:
+        loss.backward()
+
+    avg_loss = loss.item() / float(len(all_outputs))
+    return all_outputs, avg_loss 
+
 
 def compute_loss(model, inputs, targets, criterion, compute_grad=False):
-    '''
-    Computes gradients of model with given inputs and targets and loss function.
-    Optionally backpropagates to compute gradients for weights.
-    Procedure depends on whether we have one model for each source or not
-    :param model: Model to train with
-    :param inputs: Input mixture
-    :param targets: Target sources
-    :param criterion: Loss function to use (L1, L2, ..)
-    :param compute_grad: Whether to compute gradients
-    :return: Model outputs, Average loss over batch
-    '''
     loss = 0
     all_outputs = model(inputs)
     loss += criterion(all_outputs, targets)
@@ -99,12 +89,9 @@ def compute_loss(model, inputs, targets, criterion, compute_grad=False):
         loss.backward()
 
     avg_loss = loss.item() / float(len(all_outputs))
+    return all_outputs, avg_loss 
 
-    return all_outputs, avg_loss
-
-def KD_normalize(inputs,MAX=8*10e-5 , MIN=0):
-    if inputs<10e-9:
-        inputs=10e-9
+def KD_normalize(inputs,MAX=10e-6 , MIN=0):
     return (inputs-MIN)/(MAX-MIN)
 
 

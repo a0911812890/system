@@ -227,8 +227,8 @@ class Waveunet(nn.Module):
         self.target_output_size = target_output_size
 
         self.input_size, self.output_size = self.check_padding(target_output_size) # target_output_size = 預設時間  秒 * sr
-        print('expected output_size',target_output_size)
-        print("Using valid convolutions with " + str(self.input_size) + " inputs and " + str(self.output_size) + " outputs")
+        # print('expected output_size',target_output_size)
+        # print("Using valid convolutions with " + str(self.input_size) + " inputs and " + str(self.output_size) + " outputs")
 
         assert((self.input_size - self.output_size) % 2 == 0)
         self.shapes = {"output_start_frame" : (self.input_size - self.output_size) // 2,
