@@ -8,6 +8,7 @@ import copy
 from datetime import date,datetime
 from tqdm import tqdm
 from pypesq import pesq
+
 #
 import torch
 import torch.nn as nn
@@ -23,7 +24,6 @@ from Loss import customLoss,RL_customLoss
 #
 
 def main(args):
-    #torch.backends.cudnn.benchmark=True # This makes dilated conv much faster for CuDNN 7.5
     # filter array
     torch.cuda.manual_seed_all(1)
     num_features = [args.features*i for i in range(1, args.levels+2+args.levels_without_sample)] 
@@ -36,8 +36,6 @@ def main(args):
 
 
     # 設定teacher and student and student_for_backward 超參數
-    #teacher_model=0
-    #model_for_backward=0
 
     model = Waveunet(args.channels, num_features, args.channels,levels=args.levels, 
                     encoder_kernel_size=args.encoder_kernel_size,decoder_kernel_size=args.decoder_kernel_size,
@@ -45,7 +43,7 @@ def main(args):
                     conv_type=args.conv_type, res=args.res)
     if args.cuda:
         model = utils.DataParallel(model)
-        # print("move model to gpu\n")
+        print("move model to gpu\n")
         model.cuda()
     
 
@@ -54,37 +52,31 @@ def main(args):
                 encoder_kernel_size=args.encoder_kernel_size,decoder_kernel_size=args.decoder_kernel_size,
                 target_output_size=target_outputs, depth=args.depth, strides=args.strides,
                 conv_type=args.conv_type, res=args.res)
-        if args.cuda:
-            teacher_model = utils.DataParallel(teacher_model)
-            # print("move teacher_model to gpu\n")
-            teacher_model.cuda()
-        
+
         model_for_backward = Waveunet(args.channels, num_features, args.channels,levels=args.levels, 
                     encoder_kernel_size=args.encoder_kernel_size,decoder_kernel_size=args.decoder_kernel_size,
                     target_output_size=target_outputs, depth=args.depth, strides=args.strides,
                     conv_type=args.conv_type, res=args.res)
 
-        # model_for_backward2 = Waveunet(args.channels, num_features, args.channels,levels=args.levels, 
-        #             encoder_kernel_size=args.encoder_kernel_size,decoder_kernel_size=args.decoder_kernel_size,
-        #             target_output_size=target_outputs, depth=args.depth, strides=args.strides,
-        #             conv_type=args.conv_type, res=args.res)
-
-        if args.cuda:
-            model_for_backward = utils.DataParallel(model_for_backward)
-            # model_for_backward2 = utils.DataParallel(model_for_backward2)
-            # print("model_for_backward model to gpu\n")
-            model_for_backward.cuda()
-            # model_for_backward2.cuda()
-
         rl=RL(n_inputs=2,kernel_size=6,stride=1,conv_type=args.conv_type,pool_size=4)
         if args.cuda:
+            teacher_model = utils.DataParallel(teacher_model)
             rl = utils.DataParallel(rl)
-            # print("move rl to gpu\n")
+            model_for_backward = utils.DataParallel(model_for_backward)
+            
+            print("move teacher_model to gpu\n")
+            teacher_model.cuda()
+            print("model_for_backward model to gpu\n")
+            model_for_backward.cuda()
+            print("move rl to gpu\n")
             rl.cuda()
+
+        print('teacher_model_parameter count: ', str(sum(p.numel() for p in teacher_model.parameters())))
+        print('RL_parameter count: ', str(sum(p.numel() for p in rl.parameters())))
    
-    # print('model: ', model.shapes)
-    # print('student_parameter count: ', str(sum(p.numel() for p in model.parameters())))
-    # print('RL_parameter count: ', str(sum(p.numel() for p in rl.parameters())))
+    print('model: ', model.shapes)
+    print('student_parameter count: ', str(sum(p.numel() for p in model.parameters())))
+
     # print(model)
     if args.test is False:
         writer = SummaryWriter(args.log_dir)
@@ -116,21 +108,19 @@ def main(args):
     # Set up optimizer
     optimizer = Adam(params=model.parameters(), lr=args.lr)
     optimizer_model_for_backward= 0
-    # optimizer_model_for_backward2= 0
     if args.teacher_model is not None:
         optimizer_model_for_backward = Adam(params=model_for_backward.parameters(), lr=args.lr)
-        # optimizer_model_for_backward2 = Adam(params=model_for_backward2.parameters(), lr=args.lr)
         optimizer_rl = Adam(params=rl.parameters(), lr=args.RL_lr)
     
     # Set up training state dict that will also be saved into checkpoints
     state = {"step" : 0,
              "worse_epochs" : 0,
              "epochs" : 0,
-             "best_loss" : np.Inf}
+             "best_pesq" : -np.Inf}
 
     # LOAD MODEL CHECKPOINT IF DESIRED
     if args.load_RL_model is not None:
-        print("ok_Continuing full model from checkpoint " + str(args.load_RL_model))
+        print("Continuing full RL_model from checkpoint " + str(args.load_RL_model))
         rl.load_state_dict(torch.load(args.load_RL_model))
     if args.load_model is not None:
         print("Continuing full model from checkpoint " + str(args.load_model))
@@ -151,37 +141,36 @@ def main(args):
 
         KD_to_copy=True
         print(f'KD_to_copy={KD_to_copy}')
-        if KD_to_copy is True:
-            model_for_backward.load_state_dict(copy.deepcopy(model.state_dict()))
-            optimizer_model_for_backward.load_state_dict(copy.deepcopy(optimizer.state_dict()))
-        else:
-            model.load_state_dict(copy.deepcopy(model_for_backward.state_dict()))
-            optimizer.load_state_dict(copy.deepcopy(optimizer_model_for_backward.state_dict()))
+        # initialized weight
+
+
         # store_KD_rate
+        remain=20
         alpha_memory=np.linspace(0,0,batch_num*args.batch_size).reshape(batch_num,args.batch_size,1)
-        alpha_memory_final=np.linspace(0,0,20).reshape(20,1)
+        alpha_memory_final=np.linspace(0,0,remain).reshape(remain,1)
+
         alpha_memory=torch.from_numpy(alpha_memory).cuda()
         alpha_memory_final=torch.from_numpy(alpha_memory_final).cuda()
 
-        while state["epochs"] < 150:#state["worse_epochs"] < args.patience  and 
-            print("epoch:"+str(state["epochs"]))
+        while state["epochs"] < 150:
+            if args.teacher_model is not None:
+                if KD_to_copy is True:
+                    model_for_backward.load_state_dict(copy.deepcopy(model.state_dict()))
+                    optimizer_model_for_backward.load_state_dict(copy.deepcopy(optimizer.state_dict()))
+                else:
+                    model.load_state_dict(copy.deepcopy(model_for_backward.state_dict()))
+                    optimizer.load_state_dict(copy.deepcopy(optimizer_model_for_backward.state_dict()))
 
-
-            # print("Training one epoch from iteration " + str(state["step"]))
-            avg_time = 0.
-            model.train()
-            if args.teacher_model is not None :
                 model_for_backward.train()
-            # model_for_backward2.train()
+
+            print("epoch:"+str(state["epochs"]))
+            model.train()
+
+
+            # monitor_value    
             total_RL_reward=0
-            total_improve_avg_reward=0
-            RL_reward=0
             avg_origin_loss=0
-            avg_after_KD_loss=0
-            total_avg_alpha=0
-
             
-
             with tqdm(total=len(dataloader)) as pbar:
                 np.random.seed()
                 for example_num, (x, targets) in enumerate(dataloader):
@@ -189,14 +178,14 @@ def main(args):
                         x = x.cuda()
                         targets = targets.cuda()
                     t = time.time()
-
+                    
                     # Set LR for this iteration
                     
                     # Compute loss for model    
                     if args.teacher_model is not None:
+                        # set lr
                         utils.set_cyclic_lr(optimizer, example_num, len(train_data) // args.batch_size, args.cycles, args.min_lr, args.lr)
                         utils.set_cyclic_lr(optimizer_model_for_backward, example_num, len(train_data) // args.batch_size, args.cycles, args.min_lr, args.lr)
-                        # # copy s_model to backward_model (At the beginning in a batch, s_model equal to b_model ) 
 
                         # forward student and teacher  get output
                         student_output, origin_loss=utils.compute_loss(model, x, targets, criterion,compute_grad=False)
@@ -215,46 +204,34 @@ def main(args):
                             ori_KD_rate=alpha_memory_final
                         avg_ori_KD_rate=torch.mean(ori_KD_rate).item()
                         avg_KD_rate=torch.mean(KD_rate).item()
-                        total_avg_alpha+=avg_KD_rate
 
-                        # for i in range(len(KD_rate)):
-                        #     if(KD_rate[i]<0.005):
-                        #         KD_rate[i]=0
-                        # backward with alpha and without alpha 
                         optimizer.zero_grad()
                         outputs, student_avg_loss ,student_total_avg_loss ,dis_loss = utils.KD_compute_loss(model,teacher_model, x, targets, My_criterion,alpha=KD_rate,compute_grad=True)
                         optimizer.step()
-                        # temp=copy.deepcopy(KD_rate)
-                        # for i in range(len(temp)):
-                        #     if(temp[i]-0.1<0):
-                        #         temp[i]=0
-                        #     if(temp[i]+0.1>1):
-                        #         temp[i]=1
+
                         optimizer_model_for_backward.zero_grad()
                         _, _,_ ,_ = utils.KD_compute_loss(model_for_backward,teacher_model, x, targets, My_criterion,alpha=0,compute_grad=True)
                         optimizer_model_for_backward.step()
-                        # compute reward
+
+                        # calculate backwarded model MSE
                         my_KD,after_KD_loss = utils.loss_for_sample(model, x, targets)
                         vs_KD,after_loss = utils.loss_for_sample(model_for_backward, x, targets)
                         
 
-                        # improve_RL_reward=(after_loss - after_KD_loss)
-                        # k=KD_rate-ori_KD_rate
-                        # RL_reward=torch.sign(k)*improve_RL_reward
+                        # calculate r
                         RL_reward=(after_loss - after_KD_loss)
-                        after_KD_loss=torch.mean(after_KD_loss)
                         avg_origin_loss+=origin_loss/batch_num
-                        # backward RL 
 
+                        # backward RL 
                         optimizer_rl.zero_grad()
-                        RL_loss=utils.RL_compute_loss(RL_alpha,1e-7,1e-13,RL_reward,nn.MSELoss())
+                        RL_loss=utils.RL_compute_loss(RL_alpha,RL_reward,nn.MSELoss())
                         optimizer_rl.step()
-                        # improve_avg_reward=torch.mean(improve_RL_reward)
-                        # total_improve_avg_reward+=improve_avg_reward.item()
+
+                        # avg_r
                         avg_reward=torch.mean(RL_reward)
                         total_RL_reward+=avg_reward.item()
-                        # modify alpha_memory
                         
+                        # modify alpha_memory
                         if example_num<len(dataloader)-1:
                             alpha_memory[example_num]=KD_rate
                         else :
@@ -262,36 +239,34 @@ def main(args):
                         # print info
                         print(f'avg_KD_rate = {avg_KD_rate} avg_ori_KD_rate={avg_ori_KD_rate}')
                         print(f'origin_loss        = {origin_loss}')
-                        print(f'RL_modify_KD_rate  = {np.mean(after_KD_loss.cpu().detach().numpy())}')
-                        print(f'ori_KD_rate        = {np.mean(after_loss.cpu().detach().numpy())}')
+                        print(f'student_KD_loss    = {np.mean(after_KD_loss.cpu().detach().numpy())}')
+                        print(f'student_copy_loss  = {np.mean(after_loss.cpu().detach().numpy())}')
                         print(f'avg_reward         = {avg_reward}')
                         print(f'total_RL_reward    = {total_RL_reward}')
-                        
                         print(f'RL_loss            = {RL_loss}')
                         # add to tensorboard
                         writer.add_scalar("train_student_avg_loss", student_avg_loss, state["step"])
                         writer.add_scalar("train_student_total_avg_loss", student_total_avg_loss, state["step"])
                         writer.add_scalar("origin_loss", origin_loss, state["step"])
-                        writer.add_scalar("after_KD_loss", after_KD_loss, state["step"])
+                        writer.add_scalar("student_KD_loss", np.mean(after_KD_loss.cpu().detach().numpy()), state["step"])
                         writer.add_scalar("distillation_loss", dis_loss, state["step"])
                         writer.add_scalar("avg_KD_rate",avg_KD_rate, state["step"])
                         writer.add_scalar("RL_loss",RL_loss, state["step"])
                         writer.add_scalar("RL_reward", avg_reward, state["step"])
 
-                        # writer.add_scalar("improve_reward", improve_avg_reward, state["step"])
-                    else:
+                    else: # no KD training
                         utils.set_cyclic_lr(optimizer, example_num, len(train_data) // args.batch_size, args.cycles, args.min_lr, args.lr)
+                        
                         optimizer.zero_grad()
+                        # outputs, sisnr_loss = utils.sisnr_compute_loss(model, x, targets,len(targets), compute_grad=True)
                         outputs, student_avg_loss = utils.compute_loss(model, x, targets, nn.L2Loss(), compute_grad=True)
                         optimizer.step()
-                        avg_origin_loss+=student_avg_loss/batch_num
-                        writer.add_scalar("origin_loss", student_avg_loss, state["step"])
+
+                        avg_origin_loss+=sisnr_loss/batch_num
+                        writer.add_scalar("origin_loss", sisnr_loss, state["step"])
                    
 
-                    state["step"] += 1
-
-                    t = time.time() - t
-                    avg_time += (1. / float(example_num + 1)) * (t - avg_time)
+                    
                        
 
                     if example_num % args.example_freq == 0:
@@ -305,62 +280,69 @@ def main(args):
                         writer.add_audio("input:", input_centre, state["step"], sample_rate=args.sr)
                         writer.add_audio("pred:", torch.mean(outputs[0], 0), state["step"], sample_rate=args.sr)
                         writer.add_audio("target", torch.mean(targets[0], 0), state["step"], sample_rate=args.sr)
-                    # 
+
+                    state["step"] += 1
                     pbar.update(1)
-            print(f'total_RL_reward={total_RL_reward}')
+
             all_avg_KD_rate=torch.mean(alpha_memory).item()
             print(f'all_avg_KD_rate:{all_avg_KD_rate}') # 之後再把final 加進來平均
+
+
             # VALIDATE
-
-            val_loss,val_metrics = validate(args, model, criterion, val_data,writer,state)
+            val_loss,val_metrics = validate(args, model, criterion, val_data)
             print("ori VALIDATION FINISHED: LOSS: " + str(val_loss))
-            writer.add_scalar("val_loss", val_loss, state["epochs"])
-            writer.add_scalar("avg_origin_loss", avg_origin_loss, state["epochs"])
+            
+            
 
-
+            choose_val=0
             if args.teacher_model is not None :
-                val_loss_copy,val_metrics_copy = validate(args, model_for_backward, criterion, val_data,writer,state)
-                print("copy VALIDATION FINISHED: LOSS: " + str(copy_val_loss))
-                choose_val=0
+                val_loss_copy,val_metrics_copy = validate(args, model_for_backward, criterion, val_data)
+                print("copy VALIDATION FINISHED: LOSS: " + str(val_loss_copy))
+                
                 if val_metrics[0]>val_metrics_copy[0]:
                     KD_to_copy=True
-                    choose_val=pesq_value
+                    choose_val=val_metrics
                 else:
                     KD_to_copy=False
-                    choose_val=copy_pesq_value
-                writer.add_scalar("val_enhance_pesq",choose_val[0], state["epochs"])
-                writer.add_scalar("val_improve_pesq",choose_val[1], state["epochs"])
-                writer.add_scalar("val_enhance_stoi",choose_val[2], state["epochs"])
-                writer.add_scalar("val_improve_stoi",choose_val[3], state["epochs"])
+                    choose_val=val_metrics_copy
+
 
                 if KD_to_copy is True:
                     print('RL choose is better ')
-                    model_for_backward.load_state_dict(copy.deepcopy(model.state_dict()))
-                    optimizer_model_for_backward.load_state_dict(copy.deepcopy(optimizer.state_dict()))
+                    # model_for_backward.load_state_dict(copy.deepcopy(model.state_dict()))
+                    # optimizer_model_for_backward.load_state_dict(copy.deepcopy(optimizer.state_dict()))
                 else:
                     print('copy is better')
-                    model.load_state_dict(copy.deepcopy(model_for_backward.state_dict()))
-                    optimizer.load_state_dict(copy.deepcopy(optimizer_model_for_backward.state_dict()))
+                    # model.load_state_dict(copy.deepcopy(model_for_backward.state_dict()))
+                    # optimizer.load_state_dict(copy.deepcopy(optimizer_model_for_backward.state_dict()))
 
                 for i in range(len(KD_rate)):
                     writer.add_scalar("KD_rate_"+str(i), KD_rate[i], state["epochs"])
-                writer.add_scalar("avg_after_KD_loss", avg_after_KD_loss, state["epochs"])
-                writer.add_scalar("total_avg_alpha", total_avg_alpha, state["epochs"])
+
                 writer.add_scalar("all_avg_KD_rate", all_avg_KD_rate, state["epochs"])
                 writer.add_scalar("val_loss_copy", val_loss_copy, state["epochs"])
                 writer.add_scalar("total_RL_reward", total_RL_reward, state["epochs"])
+                writer.add_scalar("avg_origin_loss", avg_origin_loss, state["epochs"])
 
                 RL_checkpoint_path = os.path.join(args.checkpoint_dir, "RL_checkpoint_" + str(state["epochs"]))
                 utils.save_model(rl, optimizer_rl, state, RL_checkpoint_path)
+            else:
+                choose_val=val_metrics
+            
+            writer.add_scalar("val_enhance_pesq",choose_val[0], state["epochs"])
+            writer.add_scalar("val_improve_pesq",choose_val[1], state["epochs"])
+            writer.add_scalar("val_enhance_stoi",choose_val[2], state["epochs"])
+            writer.add_scalar("val_improve_stoi",choose_val[3], state["epochs"])
+            writer.add_scalar("val_loss", val_loss, state["epochs"])
+
             # EARLY STOPPING CHECK
             checkpoint_path = os.path.join(args.checkpoint_dir, "checkpoint_" + str(state["epochs"]))
-            
-            if val_loss >= state["best_loss"]:
+            if choose_val[0] < state["best_pesq"]:
                 state["worse_epochs"] += 1
             else:
                 print("MODEL IMPROVED ON VALIDATION SET!")
                 state["worse_epochs"] = 0
-                state["best_loss"] = val_loss
+                state["best_pesq"] = choose_val[0]
                 state["best_checkpoint"] = checkpoint_path
 
             # CHECKPOINT
@@ -372,24 +354,22 @@ def main(args):
     #### TESTING ####
     # Test loss
     print("TESTING")
-    # Load best model based on validation loss
-    #state = utils.load_model(model, None, state["best_checkpoint"], args.cuda)
-    #print(f'state["best_checkpoint"]={state["best_checkpoint"]}')
-    # test_loss = validate(args, model, criterion, test_data,writer,state)
-    # print("TEST FINISHED: LOSS: " + str(test_loss))
-    # Mir_eval metrics
+    # eval metrics
     test_metrics = evaluate(args, dataset["test"], model)
     test_pesq=test_metrics['pesq']
     test_stoi=test_metrics['stoi']
     test_noise=test_metrics['noise']
-    # # Dump all metrics results into pickle and csv file for later analysis if needed
 
-    PATH=args.load_model.split("/")
-    info="__"+PATH[-3]+"_"+PATH[-1]
-    if(args.outside_test==True):
-        info+="_outside_test"
-    print(info)
-    path=os.path.join(args.result_dir,info)
+    if args.test is False:
+        info=args.model_name
+        path=os.path.join(args.result_dir,info)
+    else:
+        PATH=args.load_model.split("/")
+        info=PATH[-3]+"_"+PATH[-1]
+        if(args.outside_test==True):
+            info+="_outside_test"
+        print(info)
+        path=os.path.join(args.result_dir,info)
     if not os.path.exists(path):
         os.makedirs(path)
     utils.save_result(test_pesq,path,"pesq")
@@ -403,7 +383,7 @@ def main(args):
 if __name__ == '__main__':
     ## TRAIN PARAMETERS
     model_base_path='/media/hd03/sutsaiwei_data/Wave-U-Net-Pytorch/model'
-    model_name = "down_size_student_myKD110"
+    model_name = "down_size_student_myKD112"
     parser = argparse.ArgumentParser()
     parser.add_argument('--cuda', action='store_true',
                         help='Use CUDA (default: False)')
@@ -411,7 +391,7 @@ if __name__ == '__main__':
                         help='Use CUDA (default: False)')
     parser.add_argument('--test', action='store_true',
                         help='Use CUDA (default: False)')
-    parser.add_argument('--num_workers', type=int, default=64,
+    parser.add_argument('--num_workers', type=int, default=16,
                         help='Number of data loader worker threads (default: 4)')
     parser.add_argument('--features', type=int, default=12,
                         help='Number of feature channels per layer')
@@ -422,7 +402,7 @@ if __name__ == '__main__':
     parser.add_argument('--hdf_dir', type=str, default="/media/hd03/sutsaiwei_data/Wave-U-Net-Pytorch/hdf/snr_hdf",
                         help='Dataset path')
 
-    parser.add_argument('--teacher_model', type=str, default=None,#"/media/hd03/sutsaiwei_data/Wave-U-Net-Pytorch/backup/2020_snr_unet_origin/checkpoints/checkpoint_33034"
+    parser.add_argument('--teacher_model', type=str, default=None,
                         help='load a  pre-trained teacher model')
     parser.add_argument('--load_model', type=str, default=None,
                         help='Reload a previously trained model (whole task model)')
@@ -479,6 +459,8 @@ if __name__ == '__main__':
                         help='Folder to write results into')
     parser.add_argument('--checkpoint_dir', type=str, default=os.path.join(model_base_path,model_name,'checkpoints'),
                         help='Folder to write checkpoints into')
+    parser.add_argument('--model_name', type=str, default=model_name,
+                        help='model_name')
     args = parser.parse_args()
     if not os.path.isdir(args.log_dir):
         os.makedirs( args.log_dir )

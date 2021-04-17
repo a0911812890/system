@@ -237,7 +237,7 @@ def evaluate(args, dataset, model):
     return {'pesq' : dB_list_name_pesq ,'stoi' : dB_list_name_stoi,'noise':noise_avg}
 
 
-def validate(args, model, criterion, test_data,writer,state):
+def validate(args, model, criterion, test_data):
     # PREPARE DATA
     dataloader = torch.utils.data.DataLoader(test_data,
                                              batch_size=args.batch_size,
@@ -289,19 +289,23 @@ def validate(args, model, criterion, test_data,writer,state):
             # print(values1,values2,values2 -values1)
             pbar.set_description("Current loss: {:.4f}".format(total_loss))
             pbar.update(1)
-    val_enhance_pesq=np.nanmean(avg_enhance_pesq)
+    val_input_pesq=np.nanmean(avg_input_pesq)
+    val_input_stoi=np.nanmean(avg_input_stoi)
     val_improve_pesq=np.nanmean(avg_improve_pesq)
-    val_enhance_stoi=np.nanmean(val_enhance_stoi)
-    val_improve_stoi=np.nanmean(val_improve_stoi)
-    print(f'val_enhance_pesq={val_enhance_pesq}')
+    val_improve_stoi=np.nanmean(avg_improve_stoi)
+    val_enhance_pesq=np.nanmean(avg_enhance_pesq)
+    val_enhance_stoi=np.nanmean(avg_enhance_stoi)
+
+    print(f'val_input_pesq={np.nanmean(avg_input_pesq)}')
     print(f'val_improve_pesq={val_improve_pesq}')
-    print(f'val_enhance_stoi={val_enhance_stoi}')
+
+    print(f'val_input_stoi={np.nanmean(avg_input_stoi)}')
     print(f'val_improve_stoi={val_improve_stoi}')
 
-    writer.add_scalar("val_enhance_pesq", np.nanmean(avg_enhance_pesq), state["epochs"])
-    writer.add_scalar("val_improve_pesq", np.nanmean(avg_improve_pesq), state["epochs"])
+    # writer.add_scalar("val_enhance_pesq", np.nanmean(avg_enhance_pesq), state["epochs"])
+    # writer.add_scalar("val_improve_pesq", np.nanmean(avg_improve_pesq), state["epochs"])
 
-    writer.add_scalar("val_enhance_stoi", np.nanmean(avg_enhance_stoi), state["epochs"])
-    writer.add_scalar("val_improve_stoi", np.nanmean(avg_improve_stoi), state["epochs"])
+    # writer.add_scalar("val_enhance_stoi", np.nanmean(avg_enhance_stoi), state["epochs"])
+    # writer.add_scalar("val_improve_stoi", np.nanmean(avg_improve_stoi), state["epochs"])
     
     return total_loss,[val_enhance_pesq,val_improve_pesq,val_enhance_stoi,val_improve_stoi]
