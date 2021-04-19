@@ -178,7 +178,7 @@ def main(args):
                         x = x.cuda()
                         targets = targets.cuda()
                     t = time.time()
-                    
+                    len_batch=len(targets)
                     # Set LR for this iteration
                     
                     # Compute loss for model    
@@ -188,8 +188,8 @@ def main(args):
                         utils.set_cyclic_lr(optimizer_model_for_backward, example_num, len(train_data) // args.batch_size, args.cycles, args.min_lr, args.lr)
 
                         # forward student and teacher  get output
-                        student_output, origin_loss=utils.compute_loss(model, x, targets, criterion,compute_grad=False)
-                        teacher_output, _=utils.compute_loss(teacher_model, x, targets, criterion,compute_grad=False)
+                        student_output, sisnr_loss=utils.sisnr_compute_loss(model, x, targets,len_batch,compute_grad=False)
+                        teacher_output, _=utils.sisnr_compute_loss(teacher_model, x, targets,len_batch,compute_grad=False)
                         # concat s_out,t_out ,target
                         rl_input=torch.cat((targets-student_output,teacher_output-student_output),1)
 
@@ -204,23 +204,25 @@ def main(args):
                             ori_KD_rate=alpha_memory_final
                         avg_ori_KD_rate=torch.mean(ori_KD_rate).item()
                         avg_KD_rate=torch.mean(KD_rate).item()
-
+                        # student_all_outputs,avg_ori_sisnr,avg_sisnr
                         optimizer.zero_grad()
-                        outputs, student_avg_loss ,student_total_avg_loss ,dis_loss = utils.KD_compute_loss(model,teacher_model, x, targets, My_criterion,alpha=KD_rate,compute_grad=True)
+                        outputs,KD_avg_ori_sisnr ,KD_avg_sisnr = utils.sisnr_KD_compute_loss(model,teacher_model, x,
+                                                                                               targets, My_criterion,KD_rate,len(targets),compute_grad=True)
                         optimizer.step()
 
                         optimizer_model_for_backward.zero_grad()
-                        _, _,_ ,_ = utils.KD_compute_loss(model_for_backward,teacher_model, x, targets, My_criterion,alpha=0,compute_grad=True)
+                        _, _,_  = utils.sisnr_KD_compute_loss(model_for_backward,teacher_model, x, 
+                                                                targets, My_criterion,0,len_batch,compute_grad=True)
                         optimizer_model_for_backward.step()
 
                         # calculate backwarded model MSE
-                        my_KD,after_KD_loss = utils.loss_for_sample(model, x, targets)
-                        vs_KD,after_loss = utils.loss_for_sample(model_for_backward, x, targets)
+                        after_KD_loss = utils.sisnr_loss_for_sample(model, x, targets,len_batch)
+                        after_loss = utils.sisnr_loss_for_sample(model_for_backward, x, targets,len_batch)
                         
 
                         # calculate r
-                        RL_reward=(after_loss - after_KD_loss)
-                        avg_origin_loss+=origin_loss/batch_num
+                        RL_reward=(after_KD_loss - after_loss)
+                        avg_origin_loss+=sisnr_loss/batch_num
 
                         # backward RL 
                         optimizer_rl.zero_grad()
@@ -232,7 +234,7 @@ def main(args):
                         total_RL_reward+=avg_reward.item()
                         
                         # modify alpha_memory
-                        if example_num<len(dataloader)-1:
+                        if len_batch==args.batch_size:
                             alpha_memory[example_num]=KD_rate
                         else :
                             alpha_memory_final=KD_rate
@@ -258,8 +260,7 @@ def main(args):
                         utils.set_cyclic_lr(optimizer, example_num, len(train_data) // args.batch_size, args.cycles, args.min_lr, args.lr)
                         
                         optimizer.zero_grad()
-                        # outputs, sisnr_loss = utils.sisnr_compute_loss(model, x, targets,len(targets), compute_grad=True)
-                        outputs, student_avg_loss = utils.compute_loss(model, x, targets, nn.L2Loss(), compute_grad=True)
+                        outputs, sisnr_loss = utils.sisnr_compute_loss(model, x, targets,len_batch, compute_grad=True)
                         optimizer.step()
 
                         avg_origin_loss+=sisnr_loss/batch_num
@@ -284,6 +285,8 @@ def main(args):
                     state["step"] += 1
                     pbar.update(1)
 
+
+
             all_avg_KD_rate=torch.mean(alpha_memory).item()
             print(f'all_avg_KD_rate:{all_avg_KD_rate}') # 之後再把final 加進來平均
 
@@ -293,8 +296,9 @@ def main(args):
             print("ori VALIDATION FINISHED: LOSS: " + str(val_loss))
             
             
-
+            writer.add_scalar("avg_origin_loss", avg_origin_loss, state["epochs"])
             choose_val=0
+            
             if args.teacher_model is not None :
                 val_loss_copy,val_metrics_copy = validate(args, model_for_backward, criterion, val_data)
                 print("copy VALIDATION FINISHED: LOSS: " + str(val_loss_copy))
@@ -322,7 +326,7 @@ def main(args):
                 writer.add_scalar("all_avg_KD_rate", all_avg_KD_rate, state["epochs"])
                 writer.add_scalar("val_loss_copy", val_loss_copy, state["epochs"])
                 writer.add_scalar("total_RL_reward", total_RL_reward, state["epochs"])
-                writer.add_scalar("avg_origin_loss", avg_origin_loss, state["epochs"])
+                
 
                 RL_checkpoint_path = os.path.join(args.checkpoint_dir, "RL_checkpoint_" + str(state["epochs"]))
                 utils.save_model(rl, optimizer_rl, state, RL_checkpoint_path)
@@ -383,7 +387,7 @@ def main(args):
 if __name__ == '__main__':
     ## TRAIN PARAMETERS
     model_base_path='/media/hd03/sutsaiwei_data/Wave-U-Net-Pytorch/model'
-    model_name = "down_size_student_myKD112"
+    model_name = "down_size_student_myKD114"
     parser = argparse.ArgumentParser()
     parser.add_argument('--cuda', action='store_true',
                         help='Use CUDA (default: False)')
@@ -408,7 +412,7 @@ if __name__ == '__main__':
                         help='Reload a previously trained model (whole task model)')
     parser.add_argument('--load_RL_model', type=str, default=None,
                         help='Reload a previously trained model (whole task model)')
-    parser.add_argument('--lr', type=float, default=1e-3,
+    parser.add_argument('--lr', type=float, default=5e-5,
                         help='Initial learning rate in LR cycle (default: 1e-3)')
     parser.add_argument('--RL_lr', type=float, default=5e-5,
                         help='Initial RL_learning rate in LR cycle (default: 1e-3)')

@@ -16,7 +16,7 @@ def compute_output(model, inputs):
 
     return all_outputs
 
-def sisnr_KD_compute_loss(model,teacher_model, inputs, targets, criterion,alpha, compute_grad=False):
+def sisnr_KD_compute_loss(model,teacher_model, inputs, targets, criterion,alpha,batch_size, compute_grad=False):
     student_all_outputs = model(inputs)
     teacher_all_outputs = teacher_model(inputs).detach()
 
@@ -32,14 +32,16 @@ def sisnr_KD_compute_loss(model,teacher_model, inputs, targets, criterion,alpha,
 
     avg_ori_sisnr=torch.mean(ori_max_snr).item()
     avg_KD_sisnr=torch.mean(KD_max_snr).item()
+    avg_sisnr=avg_ori_sisnr+avg_KD_sisnr
     print(f'avg_ori_sisnr={avg_ori_sisnr}')
     print(f'avg_KD_sisnr={avg_KD_sisnr}')
+    print(f'avg_sisnr={avg_sisnr}')
     
-    # total_loss = student_loss + KD_loss
+
     if compute_grad:
         Loss.backward()
 
-    return student_all_outputs,avg_ori_sisnr,avg_KD_sisnr
+    return student_all_outputs,avg_ori_sisnr,avg_sisnr
 
 def KD_compute_loss(model,teacher_model, inputs, targets, criterion,alpha, compute_grad=False):
     student_all_outputs = model(inputs)
@@ -125,7 +127,7 @@ def RL_compute_loss(RL_alpha, reward,criterion):
     loss.backward()
     return loss
 
-    
+
 def save_result(data,dir_path,name):
     
     with open(os.path.join(dir_path,name+ "_results.pkl"), "wb") as f:
