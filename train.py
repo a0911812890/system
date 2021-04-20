@@ -178,15 +178,7 @@ def main(args):
                     if args.cuda:
                         x = x.cuda()
                         targets = targets.cuda()
-<<<<<<< HEAD
                     
-=======
-                    t = time.time()
-                    len_batch=len(targets)
-                    # Set LR for this iteration
-                    
-                    # Compute loss for model    
->>>>>>> bdb2a5da2a2656e3db728c6a4d8c5ec101d91152
                     if args.teacher_model is not None:
                         
                         # Set LR for this iteration  
@@ -194,15 +186,8 @@ def main(args):
                         utils.set_cyclic_lr(copy_optimizer, example_num, len(train_data) // args.batch_size, args.cycles, args.min_lr, args.lr)
 
                         # forward student and teacher  get output
-<<<<<<< HEAD
                         student_KD_output, student_KD_loss=utils.compute_loss(student_KD, x, targets, criterion,compute_grad=False)
                         teacher_output, _=utils.compute_loss(teacher_model, x, targets, criterion,compute_grad=False)
-=======
-                        student_output, sisnr_loss=utils.sisnr_compute_loss(model, x, targets,len_batch,compute_grad=False)
-                        teacher_output, _=utils.sisnr_compute_loss(teacher_model, x, targets,len_batch,compute_grad=False)
-                        # concat s_out,t_out ,target
-                        rl_input=torch.cat((targets-student_output,teacher_output-student_output),1)
->>>>>>> bdb2a5da2a2656e3db728c6a4d8c5ec101d91152
 
                         # PG_state
                         PG_state=torch.cat((targets-student_KD_output,teacher_output-student_KD_output),1)
@@ -211,7 +196,6 @@ def main(args):
                         alpha=policy_network(PG_state)
                         nograd_alpha=alpha.detach()
                         
-<<<<<<< HEAD
                         avg_KD_rate=torch.mean(nograd_alpha).item()
                         all_avg_KD_rate+=avg_KD_rate / batch_num
                         KD_optimizer.zero_grad()
@@ -231,42 +215,12 @@ def main(args):
                         r /= student_KD_loss
                         avg_origin_loss += student_KD_loss / batch_num
                         
-=======
-                        # save alpha to memory 
-                        if example_num<len(dataloader)-1:
-                            ori_KD_rate=alpha_memory[example_num]
-                        else :
-                            ori_KD_rate=alpha_memory_final
-                        avg_ori_KD_rate=torch.mean(ori_KD_rate).item()
-                        avg_KD_rate=torch.mean(KD_rate).item()
-                        # student_all_outputs,avg_ori_sisnr,avg_sisnr
-                        optimizer.zero_grad()
-                        outputs,KD_avg_ori_sisnr ,KD_avg_sisnr = utils.sisnr_KD_compute_loss(model,teacher_model, x,
-                                                                                               targets, My_criterion,KD_rate,len(targets),compute_grad=True)
-                        optimizer.step()
-
-                        optimizer_model_for_backward.zero_grad()
-                        _, _,_  = utils.sisnr_KD_compute_loss(model_for_backward,teacher_model, x, 
-                                                                targets, My_criterion,0,len_batch,compute_grad=True)
-                        optimizer_model_for_backward.step()
-
-                        # calculate backwarded model MSE
-                        after_KD_loss = utils.sisnr_loss_for_sample(model, x, targets,len_batch)
-                        after_loss = utils.sisnr_loss_for_sample(model_for_backward, x, targets,len_batch)
-                        
-
-                        # calculate r
-                        RL_reward=(after_KD_loss - after_loss)
-                        avg_origin_loss+=sisnr_loss/batch_num
-
->>>>>>> bdb2a5da2a2656e3db728c6a4d8c5ec101d91152
                         # backward RL 
                         PG_optimizer.zero_grad()
                         PG_loss=utils.RL_compute_loss(alpha,r,nn.MSELoss())
                         PG_optimizer.step()
 
                         # avg_r
-<<<<<<< HEAD
                         avg_r=torch.mean(r)
                         total_r+=avg_r.item()
                         print(f'improve ratio = {avg_r}')
@@ -274,16 +228,6 @@ def main(args):
                         memory_bank.append(Memory(PG_state,nograd_alpha,r))
                         # print('memory_bank')
                         # print(memory_bank[-1].alpha)
-=======
-                        avg_reward=torch.mean(RL_reward)
-                        total_RL_reward+=avg_reward.item()
-                        
-                        # modify alpha_memory
-                        if len_batch==args.batch_size:
-                            alpha_memory[example_num]=KD_rate
-                        else :
-                            alpha_memory_final=KD_rate
->>>>>>> bdb2a5da2a2656e3db728c6a4d8c5ec101d91152
                         # print info
                         print(f'avg_KD_rate = {avg_KD_rate} ')
                         print(f'student_KD_loss             = {student_KD_loss}')
@@ -304,23 +248,12 @@ def main(args):
                         writer.add_scalar("r", avg_r, state["step"])
 
                     else: # no KD training
-<<<<<<< HEAD
                         utils.set_cyclic_lr(KD_optimizer, example_num, len(train_data) // args.batch_size, args.cycles, args.min_lr, args.lr)
                         KD_optimizer.zero_grad()
                         KD_outputs, KD_hard_loss = utils.compute_loss(student_KD, x, targets, nn.MSELoss(), compute_grad=True)
                         KD_optimizer.step()
                         avg_origin_loss+=KD_hard_loss/batch_num
                         writer.add_scalar("student_KD_loss", KD_hard_loss, state["step"])
-=======
-                        utils.set_cyclic_lr(optimizer, example_num, len(train_data) // args.batch_size, args.cycles, args.min_lr, args.lr)
-                        
-                        optimizer.zero_grad()
-                        outputs, sisnr_loss = utils.sisnr_compute_loss(model, x, targets,len_batch, compute_grad=True)
-                        optimizer.step()
-
-                        avg_origin_loss+=sisnr_loss/batch_num
-                        writer.add_scalar("origin_loss", sisnr_loss, state["step"])
->>>>>>> bdb2a5da2a2656e3db728c6a4d8c5ec101d91152
                    
 
                     
@@ -339,17 +272,7 @@ def main(args):
 
                     state["step"] += 1
                     pbar.update(1)
-<<<<<<< HEAD
             all_avg_KD_rate
-=======
-
-
-
-            all_avg_KD_rate=torch.mean(alpha_memory).item()
-            print(f'all_avg_KD_rate:{all_avg_KD_rate}') # 之後再把final 加進來平均
-
-
->>>>>>> bdb2a5da2a2656e3db728c6a4d8c5ec101d91152
             # VALIDATE
             val_loss,val_metrics = validate(args, student_KD, criterion, val_data)
             print("ori VALIDATION FINISHED: LOSS: " + str(val_loss))
@@ -380,13 +303,8 @@ def main(args):
 
                 writer.add_scalar("all_avg_KD_rate", all_avg_KD_rate, state["epochs"])
                 writer.add_scalar("val_loss_copy", val_loss_copy, state["epochs"])
-<<<<<<< HEAD
                 writer.add_scalar("total_r", total_r, state["epochs"])
                 writer.add_scalar("avg_origin_loss", avg_origin_loss, state["epochs"])
-=======
-                writer.add_scalar("total_RL_reward", total_RL_reward, state["epochs"])
-                
->>>>>>> bdb2a5da2a2656e3db728c6a4d8c5ec101d91152
 
                 RL_checkpoint_path = os.path.join(args.checkpoint_dir, "RL_checkpoint_" + str(state["epochs"]))
                 utils.save_model(policy_network, PG_optimizer, state, RL_checkpoint_path)
@@ -449,11 +367,7 @@ def main(args):
 if __name__ == '__main__':
     ## TRAIN PARAMETERS
     model_base_path='/media/hd03/sutsaiwei_data/Wave-U-Net-Pytorch/model'
-<<<<<<< HEAD
     model_name = "self_reward"
-=======
-    model_name = "down_size_student_myKD114"
->>>>>>> bdb2a5da2a2656e3db728c6a4d8c5ec101d91152
     parser = argparse.ArgumentParser()
     parser.add_argument('--cuda', action='store_true',
                         help='Use CUDA (default: False)')
