@@ -16,31 +16,9 @@ def compute_output(model, inputs):
 
     return all_outputs
 
-def sisnr_KD_compute_loss(model,teacher_model, inputs, targets, criterion,alpha, compute_grad=False):
-    student_all_outputs = model(inputs)
-    teacher_all_outputs = teacher_model(inputs).detach()
 
-    ori_Loss, ori_max_snr, ori_estimate_source, ori_reorder_estimate_source = oneMask_criterion.cal_loss(targets, all_outputs, 
-                                                                                                        torch.tensor(batch_size*[28793]).cuda(),1)
 
-    KD_Loss, KD_max_snr, KD_estimate_source, KD_reorder_estimate_source = oneMask_criterion.cal_loss(targets, all_outputs,
-                                                                                                     torch.tensor(batch_size*[28793]).cuda(),alpha)
-
-    Loss =  KD_Loss + ori_Loss
-    if compute_grad:
-        Loss.backward()
-
-    avg_ori_sisnr=torch.mean(ori_max_snr).item()
-    avg_KD_sisnr=torch.mean(KD_max_snr).item()
-    print(f'avg_ori_sisnr={avg_ori_sisnr}')
-    print(f'avg_KD_sisnr={avg_KD_sisnr}')
-    
-    # total_loss = student_loss + KD_loss
-    if compute_grad:
-        Loss.backward()
-
-    return student_all_outputs,avg_ori_sisnr,avg_KD_sisnr
-
+### MSE ###
 def KD_compute_loss(model,teacher_model, inputs, targets, criterion,alpha, compute_grad=False):
     student_all_outputs = model(inputs)
     teacher_all_outputs = teacher_model(inputs).detach()
@@ -59,30 +37,13 @@ def KD_compute_loss(model,teacher_model, inputs, targets, criterion,alpha, compu
     return student_all_outputs, student_avg_loss  ,total_avg_loss ,KD_loss
 
 
-
 def loss_for_sample(model, inputs, targets):
     loss = 0
     with torch.no_grad():
         all_outputs = model(inputs).detach()
         loss = torch.mean(torch.pow((all_outputs-targets),2),2)/len(all_outputs)
-    return all_outputs,loss
+    return loss
 
-def sisnr_loss_for_sample(model, inputs, targets,batch_size):
-    loss = 0
-    with torch.no_grad():
-        all_outputs = model(inputs).detach()
-        Loss, max_snr, estimate_source, reorder_estimate_source = oneMask_criterion.cal_loss(targets, all_outputs, torch.tensor(batch_size*[28793]).cuda())
-    return max_snr
-
-def sisnr_compute_loss(model, inputs, targets,batch_size, compute_grad=False):
-    loss = 0
-    all_outputs = model(inputs)
-    Loss, max_snr, estimate_source, reorder_estimate_source = oneMask_criterion.cal_loss(targets, all_outputs, torch.tensor(batch_size*[28793]).cuda())
-    if compute_grad:
-        Loss.backward()
-    avg_sisnr=torch.mean(max_snr).item()
-    print(avg_sisnr)
-    return all_outputs, Loss.item()
 
 def compute_loss(model, inputs, targets, criterion, compute_grad=False):
     loss = 0
@@ -110,6 +71,54 @@ def reward_norm(MAX_value,MIN_value,reward):
                 reward[i]=-MAX_value
     return reward
 
+
+### SISNR ###
+
+def sisnr_KD_compute_loss(model,teacher_model, inputs, targets, criterion,alpha,batch_size, compute_grad=False):
+    student_all_outputs = model(inputs)
+    teacher_all_outputs = teacher_model(inputs).detach()
+
+    ori_Loss, ori_max_snr, ori_estimate_source, ori_reorder_estimate_source = oneMask_criterion.cal_loss(targets, all_outputs, 
+                                                                                                        torch.tensor(batch_size*[28793]).cuda(),1)
+
+    KD_Loss, KD_max_snr, KD_estimate_source, KD_reorder_estimate_source = oneMask_criterion.cal_loss(targets, all_outputs,
+                                                                                                     torch.tensor(batch_size*[28793]).cuda(),alpha)
+
+    Loss =  KD_Loss + ori_Loss
+    if compute_grad:
+        Loss.backward()
+
+    avg_ori_sisnr=torch.mean(ori_max_snr).item()
+    avg_KD_sisnr=torch.mean(KD_max_snr).item()
+    avg_sisnr=avg_ori_sisnr+avg_KD_sisnr
+    print(f'avg_ori_sisnr={avg_ori_sisnr}')
+    print(f'avg_KD_sisnr={avg_KD_sisnr}')
+    print(f'avg_sisnr={avg_sisnr}')
+    
+
+    if compute_grad:
+        Loss.backward()
+
+    return student_all_outputs,avg_ori_sisnr,avg_sisnr
+
+
+def sisnr_loss_for_sample(model, inputs, targets,batch_size):
+    loss = 0
+    with torch.no_grad():
+        all_outputs = model(inputs).detach()
+        Loss, max_snr, estimate_source, reorder_estimate_source = oneMask_criterion.cal_loss(targets, all_outputs, torch.tensor(batch_size*[28793]).cuda())
+    return max_snr
+
+def sisnr_compute_loss(model, inputs, targets,batch_size, compute_grad=False):
+    loss = 0
+    all_outputs = model(inputs)
+    Loss, max_snr, estimate_source, reorder_estimate_source = oneMask_criterion.cal_loss(targets, all_outputs, torch.tensor(batch_size*[28793]).cuda())
+    if compute_grad:
+        Loss.backward()
+    avg_sisnr=torch.mean(max_snr).item()
+    print(avg_sisnr)
+    return all_outputs, Loss.item()
+
 def RL_compute_loss(RL_alpha, reward,criterion):
     label = torch.zeros(len(RL_alpha),1)
     label = label.cuda()
@@ -125,7 +134,13 @@ def RL_compute_loss(RL_alpha, reward,criterion):
     loss.backward()
     return loss
 
-    
+
+
+
+
+
+
+###   data process ###
 def save_result(data,dir_path,name):
     
     with open(os.path.join(dir_path,name+ "_results.pkl"), "wb") as f:

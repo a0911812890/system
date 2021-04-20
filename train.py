@@ -15,19 +15,25 @@ import torch.nn as nn
 from torch.utils.tensorboard import SummaryWriter
 from torch.optim import Adam,SGD
 #
-import utils
+import utils 
 from data import  SeparationDataset,  crop ,get_folds
 from test import evaluate, validate
 from waveunet import Waveunet
 from RL import RL
+from Memory import Memory
 from Loss import customLoss,RL_customLoss
 #
+    
 
 def main(args):
-    # filter array
+    # set seed
     torch.cuda.manual_seed_all(1)
+    np.random.seed(0)
+
+    # filter array
     num_features = [args.features*i for i in range(1, args.levels+2+args.levels_without_sample)] 
     teacher_num_features = [24*i for i in range(1, args.levels+2+args.levels_without_sample)] 
+
     # 確定 輸出大小
     target_outputs = int(args.output_size * args.sr)
     # 訓練才保存模型設定參數
@@ -37,15 +43,17 @@ def main(args):
 
     # 設定teacher and student and student_for_backward 超參數
 
-    model = Waveunet(args.channels, num_features, args.channels,levels=args.levels, 
+    student_KD = Waveunet(args.channels, num_features, args.channels,levels=args.levels, 
                     encoder_kernel_size=args.encoder_kernel_size,decoder_kernel_size=args.decoder_kernel_size,
                     target_output_size=target_outputs, depth=args.depth, strides=args.strides,
                     conv_type=args.conv_type, res=args.res)
     if args.cuda:
-        model = utils.DataParallel(model)
-        print("move model to gpu\n")
-        model.cuda()
-    
+        student_KD = utils.DataParallel(student_KD)
+        print("move student_KD to gpu\n")
+        student_KD.cuda()
+    student_size = sum(p.numel() for p in student_KD.parameters())
+    print('student_KD: ', student_KD.shapes)
+    print('student_parameter count: ', str(student_size))
 
     if args.teacher_model is not None:
         teacher_model = Waveunet(args.channels, teacher_num_features, args.channels,levels=args.levels, 
@@ -53,30 +61,30 @@ def main(args):
                 target_output_size=target_outputs, depth=args.depth, strides=args.strides,
                 conv_type=args.conv_type, res=args.res)
 
-        model_for_backward = Waveunet(args.channels, num_features, args.channels,levels=args.levels, 
+        student_copy = Waveunet(args.channels, num_features, args.channels,levels=args.levels, 
                     encoder_kernel_size=args.encoder_kernel_size,decoder_kernel_size=args.decoder_kernel_size,
                     target_output_size=target_outputs, depth=args.depth, strides=args.strides,
                     conv_type=args.conv_type, res=args.res)
 
-        rl=RL(n_inputs=2,kernel_size=6,stride=1,conv_type=args.conv_type,pool_size=4)
+        policy_network=RL(n_inputs=2,kernel_size=6,stride=1,conv_type=args.conv_type,pool_size=4)
         if args.cuda:
             teacher_model = utils.DataParallel(teacher_model)
-            rl = utils.DataParallel(rl)
-            model_for_backward = utils.DataParallel(model_for_backward)
+            policy_network = utils.DataParallel(policy_network)
+            student_copy = utils.DataParallel(student_copy)
             
-            print("move teacher_model to gpu\n")
+            print("move teacher to gpu\n")
             teacher_model.cuda()
-            print("model_for_backward model to gpu\n")
-            model_for_backward.cuda()
-            print("move rl to gpu\n")
-            rl.cuda()
+            print("student_copy  to gpu\n")
+            student_copy.cuda()
+            print("move policy_network to gpu\n")
+            policy_network.cuda()
+        teacher_size=sum(p.numel() for p in teacher_model.parameters())
+        print('teacher_model_parameter count: ', str(teacher_size))
+        print('RL_parameter count: ', str(sum(p.numel() for p in policy_network.parameters())))
+        print(f'compression raito :{100*(student_size/teacher_size)}%')
+    
 
-        print('teacher_model_parameter count: ', str(sum(p.numel() for p in teacher_model.parameters())))
-        print('RL_parameter count: ', str(sum(p.numel() for p in rl.parameters())))
-   
-    print('model: ', model.shapes)
-    print('student_parameter count: ', str(sum(p.numel() for p in model.parameters())))
-
+    
     # print(model)
     if args.test is False:
         writer = SummaryWriter(args.log_dir)
@@ -85,13 +93,13 @@ def main(args):
 
     dataset = get_folds(args.dataset_dir,args.outside_test)
     # If not data augmentation, at least crop targets to fit model output shape
-    crop_func = partial(crop, shapes=model.shapes)
+    crop_func = partial(crop, shapes=student_KD.shapes)
     # Data augmentation function for training
     if args.test is False:
-        train_data = SeparationDataset(dataset, "train", args.sr, args.channels, model.shapes, False, args.hdf_dir, audio_transform=crop_func)
-        val_data = SeparationDataset(dataset, "test", args.sr, args.channels, model.shapes, False, args.hdf_dir, audio_transform=crop_func)
+        train_data = SeparationDataset(dataset, "train", args.sr, args.channels, student_KD.shapes, False, args.hdf_dir, audio_transform=crop_func)
+        val_data = SeparationDataset(dataset, "test", args.sr, args.channels, student_KD.shapes, False, args.hdf_dir, audio_transform=crop_func)
         dataloader = torch.utils.data.DataLoader(train_data, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, worker_init_fn=utils.worker_init_fn,pin_memory=True)
-    test_data = SeparationDataset(dataset, "test", args.sr, args.channels, model.shapes, False, args.hdf_dir, audio_transform=crop_func)
+    test_data = SeparationDataset(dataset, "test", args.sr, args.channels, student_KD.shapes, False, args.hdf_dir, audio_transform=crop_func)
     
         
 
@@ -106,11 +114,10 @@ def main(args):
         raise NotImplementedError("Couldn't find this loss!")
     My_criterion = customLoss()
     # Set up optimizer
-    optimizer = Adam(params=model.parameters(), lr=args.lr)
-    optimizer_model_for_backward= 0
+    KD_optimizer = Adam(params=student_KD.parameters(), lr=args.lr)
     if args.teacher_model is not None:
-        optimizer_model_for_backward = Adam(params=model_for_backward.parameters(), lr=args.lr)
-        optimizer_rl = Adam(params=rl.parameters(), lr=args.RL_lr)
+        copy_optimizer = Adam(params=student_copy.parameters(), lr=args.lr)
+        PG_optimizer = Adam(params=policy_network.parameters(), lr=args.RL_lr)
     
     # Set up training state dict that will also be saved into checkpoints
     state = {"step" : 0,
@@ -121,12 +128,12 @@ def main(args):
     # LOAD MODEL CHECKPOINT IF DESIRED
     if args.load_RL_model is not None:
         print("Continuing full RL_model from checkpoint " + str(args.load_RL_model))
-        rl.load_state_dict(torch.load(args.load_RL_model))
+        policy_network.load_state_dict(torch.load(args.load_RL_model))
     if args.load_model is not None:
-        print("Continuing full model from checkpoint " + str(args.load_model))
+        print("Continuing full student_KD from checkpoint " + str(args.load_model))
         if args.test is False and args.teacher_model is not None :
-            state = utils.load_model(model_for_backward, optimizer_model_for_backward, args.load_model, args.cuda)
-        state = utils.load_model(model, optimizer, args.load_model, args.cuda)
+            state = utils.load_model(student_copy, copy_optimizer, args.load_model, args.cuda)
+        state = utils.load_model(student_KD, KD_optimizer, args.load_model, args.cuda)
 
     # load teacher model
     if args.teacher_model is not None :
@@ -146,157 +153,135 @@ def main(args):
 
         # store_KD_rate
         remain=20
-        alpha_memory=np.linspace(0,0,batch_num*args.batch_size).reshape(batch_num,args.batch_size,1)
-        alpha_memory_final=np.linspace(0,0,remain).reshape(remain,1)
-
-        alpha_memory=torch.from_numpy(alpha_memory).cuda()
-        alpha_memory_final=torch.from_numpy(alpha_memory_final).cuda()
 
         while state["epochs"] < 150:
             if args.teacher_model is not None:
                 if KD_to_copy is True:
-                    model_for_backward.load_state_dict(copy.deepcopy(model.state_dict()))
-                    optimizer_model_for_backward.load_state_dict(copy.deepcopy(optimizer.state_dict()))
+                    student_copy.load_state_dict(copy.deepcopy(student_KD.state_dict()))
+                    copy_optimizer.load_state_dict(copy.deepcopy(KD_optimizer.state_dict()))
                 else:
-                    model.load_state_dict(copy.deepcopy(model_for_backward.state_dict()))
-                    optimizer.load_state_dict(copy.deepcopy(optimizer_model_for_backward.state_dict()))
+                    student_KD.load_state_dict(copy.deepcopy(student_copy.state_dict()))
+                    KD_optimizer.load_state_dict(copy.deepcopy(copy_optimizer.state_dict()))
 
-                model_for_backward.train()
-
+                student_copy.train()
+            memory_bank=[]
             print("epoch:"+str(state["epochs"]))
-            model.train()
+            student_KD.train()
 
 
             # monitor_value    
-            total_RL_reward=0
+            total_r=0
             avg_origin_loss=0
-            
+            all_avg_KD_rate=0
             with tqdm(total=len(dataloader)) as pbar:
-                np.random.seed()
                 for example_num, (x, targets) in enumerate(dataloader):
                     if args.cuda:
                         x = x.cuda()
                         targets = targets.cuda()
-                    t = time.time()
                     
-                    # Set LR for this iteration
-                    
-                    # Compute loss for model    
                     if args.teacher_model is not None:
-                        # set lr
-                        utils.set_cyclic_lr(optimizer, example_num, len(train_data) // args.batch_size, args.cycles, args.min_lr, args.lr)
-                        utils.set_cyclic_lr(optimizer_model_for_backward, example_num, len(train_data) // args.batch_size, args.cycles, args.min_lr, args.lr)
+                        
+                        # Set LR for this iteration  
+                        utils.set_cyclic_lr(KD_optimizer, example_num, len(train_data) // args.batch_size, args.cycles, args.min_lr, args.lr)
+                        utils.set_cyclic_lr(copy_optimizer, example_num, len(train_data) // args.batch_size, args.cycles, args.min_lr, args.lr)
 
                         # forward student and teacher  get output
-                        student_output, origin_loss=utils.compute_loss(model, x, targets, criterion,compute_grad=False)
+                        student_KD_output, student_KD_loss=utils.compute_loss(student_KD, x, targets, criterion,compute_grad=False)
                         teacher_output, _=utils.compute_loss(teacher_model, x, targets, criterion,compute_grad=False)
-                        # concat s_out,t_out ,target
-                        rl_input=torch.cat((targets-student_output,teacher_output-student_output),1)
 
-                        # forward RL get RL_alpha
-                        RL_alpha=rl(rl_input)
-                        KD_rate=RL_alpha.detach()
+                        # PG_state
+                        PG_state=torch.cat((targets-student_KD_output,teacher_output-student_KD_output),1)
+
+                        # forward RL get alpha
+                        alpha=policy_network(PG_state)
+                        nograd_alpha=alpha.detach()
                         
-                        # save alpha to memory 
-                        if example_num<len(dataloader)-1:
-                            ori_KD_rate=alpha_memory[example_num]
-                        else :
-                            ori_KD_rate=alpha_memory_final
-                        avg_ori_KD_rate=torch.mean(ori_KD_rate).item()
-                        avg_KD_rate=torch.mean(KD_rate).item()
+                        avg_KD_rate=torch.mean(nograd_alpha).item()
+                        all_avg_KD_rate+=avg_KD_rate / batch_num
+                        KD_optimizer.zero_grad()
+                        KD_outputs, KD_hard_loss ,KD_loss ,KD_soft_loss = utils.KD_compute_loss(student_KD,teacher_model, x, targets, My_criterion,alpha=nograd_alpha,compute_grad=True)
+                        KD_optimizer.step()
 
-                        optimizer.zero_grad()
-                        outputs, student_avg_loss ,student_total_avg_loss ,dis_loss = utils.KD_compute_loss(model,teacher_model, x, targets, My_criterion,alpha=KD_rate,compute_grad=True)
-                        optimizer.step()
-
-                        optimizer_model_for_backward.zero_grad()
-                        _, _,_ ,_ = utils.KD_compute_loss(model_for_backward,teacher_model, x, targets, My_criterion,alpha=0,compute_grad=True)
-                        optimizer_model_for_backward.step()
+                        copy_optimizer.zero_grad()
+                        _, _,_ ,_ = utils.KD_compute_loss(student_copy,teacher_model, x, targets, My_criterion,alpha=0,compute_grad=True)
+                        copy_optimizer.step()
 
                         # calculate backwarded model MSE
-                        my_KD,after_KD_loss = utils.loss_for_sample(model, x, targets)
-                        vs_KD,after_loss = utils.loss_for_sample(model_for_backward, x, targets)
+                        backward_KD_loss = utils.loss_for_sample(student_KD, x, targets)
                         
 
                         # calculate r
-                        RL_reward=(after_loss - after_KD_loss)
-                        avg_origin_loss+=origin_loss/batch_num
-
+                        r = (student_KD_loss - backward_KD_loss).detach()
+                        r /= student_KD_loss
+                        avg_origin_loss += student_KD_loss / batch_num
+                        
                         # backward RL 
-                        optimizer_rl.zero_grad()
-                        RL_loss=utils.RL_compute_loss(RL_alpha,RL_reward,nn.MSELoss())
-                        optimizer_rl.step()
+                        PG_optimizer.zero_grad()
+                        PG_loss=utils.RL_compute_loss(alpha,r,nn.MSELoss())
+                        PG_optimizer.step()
 
                         # avg_r
-                        avg_reward=torch.mean(RL_reward)
-                        total_RL_reward+=avg_reward.item()
-                        
-                        # modify alpha_memory
-                        if example_num<len(dataloader)-1:
-                            alpha_memory[example_num]=KD_rate
-                        else :
-                            alpha_memory_final=KD_rate
+                        avg_r=torch.mean(r)
+                        total_r+=avg_r.item()
+                        print(f'improve ratio = {avg_r}')
+                        # append to memory bank
+                        memory_bank.append(Memory(PG_state,nograd_alpha,r))
+                        # print('memory_bank')
+                        # print(memory_bank[-1].alpha)
                         # print info
-                        print(f'avg_KD_rate = {avg_KD_rate} avg_ori_KD_rate={avg_ori_KD_rate}')
-                        print(f'origin_loss        = {origin_loss}')
-                        print(f'student_KD_loss    = {np.mean(after_KD_loss.cpu().detach().numpy())}')
-                        print(f'student_copy_loss  = {np.mean(after_loss.cpu().detach().numpy())}')
-                        print(f'avg_reward         = {avg_reward}')
-                        print(f'total_RL_reward    = {total_RL_reward}')
-                        print(f'RL_loss            = {RL_loss}')
+                        print(f'avg_KD_rate = {avg_KD_rate} ')
+                        print(f'student_KD_loss             = {student_KD_loss}')
+                        print(f'backward_student_KD_loss    = {np.mean(backward_KD_loss.cpu().detach().numpy())}')
+                        # print(f'student_copy_loss           = {np.mean(backward_copy_loss.cpu().detach().numpy())}')
+                        print(f'avg_r                       = {avg_r}')
+                        print(f'total_r                     = {total_r}')
+                        print(f'PG_loss                     = {PG_loss}')
                         # add to tensorboard
-                        writer.add_scalar("train_student_avg_loss", student_avg_loss, state["step"])
-                        writer.add_scalar("train_student_total_avg_loss", student_total_avg_loss, state["step"])
-                        writer.add_scalar("origin_loss", origin_loss, state["step"])
-                        writer.add_scalar("student_KD_loss", np.mean(after_KD_loss.cpu().detach().numpy()), state["step"])
-                        writer.add_scalar("distillation_loss", dis_loss, state["step"])
+                        
+                        writer.add_scalar("student_KD_loss", student_KD_loss, state["step"])
+                        writer.add_scalar("backward_student_KD_loss", np.mean(backward_KD_loss.cpu().detach().numpy()), state["step"])
+                        writer.add_scalar("KD_loss", KD_loss, state["step"])
+                        writer.add_scalar("KD_hard_loss", KD_hard_loss, state["step"])
+                        writer.add_scalar("KD_soft_loss", KD_soft_loss, state["step"])
                         writer.add_scalar("avg_KD_rate",avg_KD_rate, state["step"])
-                        writer.add_scalar("RL_loss",RL_loss, state["step"])
-                        writer.add_scalar("RL_reward", avg_reward, state["step"])
+                        writer.add_scalar("PG_loss",PG_loss, state["step"])
+                        writer.add_scalar("r", avg_r, state["step"])
 
                     else: # no KD training
-                        utils.set_cyclic_lr(optimizer, example_num, len(train_data) // args.batch_size, args.cycles, args.min_lr, args.lr)
-                        
-                        optimizer.zero_grad()
-                        # outputs, sisnr_loss = utils.sisnr_compute_loss(model, x, targets,len(targets), compute_grad=True)
-                        outputs, student_avg_loss = utils.compute_loss(model, x, targets, nn.L2Loss(), compute_grad=True)
-                        optimizer.step()
-
-                        avg_origin_loss+=sisnr_loss/batch_num
-                        writer.add_scalar("origin_loss", sisnr_loss, state["step"])
+                        utils.set_cyclic_lr(KD_optimizer, example_num, len(train_data) // args.batch_size, args.cycles, args.min_lr, args.lr)
+                        KD_optimizer.zero_grad()
+                        KD_outputs, KD_hard_loss = utils.compute_loss(student_KD, x, targets, nn.MSELoss(), compute_grad=True)
+                        KD_optimizer.step()
+                        avg_origin_loss+=KD_hard_loss/batch_num
+                        writer.add_scalar("student_KD_loss", KD_hard_loss, state["step"])
                    
 
                     
-                       
-
+                    ### save wav ####
                     if example_num % args.example_freq == 0:
-                        input_centre = torch.mean(x[0, :, model.shapes["output_start_frame"]:model.shapes["output_end_frame"]], 0) # Stereo not supported for logs yet
+                        input_centre = torch.mean(x[0, :, student_KD.shapes["output_start_frame"]:student_KD.shapes["output_end_frame"]], 0) # Stereo not supported for logs yet
                         
                         target=torch.mean(targets[0], 0).cpu().numpy()
-                        pred=torch.mean(outputs[0], 0).detach().cpu().numpy()
+                        pred=torch.mean(KD_outputs[0], 0).detach().cpu().numpy()
                         inputs=input_centre.cpu().numpy()
 
 
                         writer.add_audio("input:", input_centre, state["step"], sample_rate=args.sr)
-                        writer.add_audio("pred:", torch.mean(outputs[0], 0), state["step"], sample_rate=args.sr)
+                        writer.add_audio("pred:", torch.mean(KD_outputs[0], 0), state["step"], sample_rate=args.sr)
                         writer.add_audio("target", torch.mean(targets[0], 0), state["step"], sample_rate=args.sr)
 
                     state["step"] += 1
                     pbar.update(1)
-
-            all_avg_KD_rate=torch.mean(alpha_memory).item()
-            print(f'all_avg_KD_rate:{all_avg_KD_rate}') # 之後再把final 加進來平均
-
-
+            all_avg_KD_rate
             # VALIDATE
-            val_loss,val_metrics = validate(args, model, criterion, val_data)
+            val_loss,val_metrics = validate(args, student_KD, criterion, val_data)
             print("ori VALIDATION FINISHED: LOSS: " + str(val_loss))
             
             
 
             choose_val=0
             if args.teacher_model is not None :
-                val_loss_copy,val_metrics_copy = validate(args, model_for_backward, criterion, val_data)
+                val_loss_copy,val_metrics_copy = validate(args, student_copy, criterion, val_data)
                 print("copy VALIDATION FINISHED: LOSS: " + str(val_loss_copy))
                 
                 if val_metrics[0]>val_metrics_copy[0]:
@@ -309,23 +294,19 @@ def main(args):
 
                 if KD_to_copy is True:
                     print('RL choose is better ')
-                    # model_for_backward.load_state_dict(copy.deepcopy(model.state_dict()))
-                    # optimizer_model_for_backward.load_state_dict(copy.deepcopy(optimizer.state_dict()))
                 else:
                     print('copy is better')
-                    # model.load_state_dict(copy.deepcopy(model_for_backward.state_dict()))
-                    # optimizer.load_state_dict(copy.deepcopy(optimizer_model_for_backward.state_dict()))
 
-                for i in range(len(KD_rate)):
-                    writer.add_scalar("KD_rate_"+str(i), KD_rate[i], state["epochs"])
+                for i in range(len(nograd_alpha)):
+                    writer.add_scalar("KD_rate_"+str(i), nograd_alpha[i], state["epochs"])
 
                 writer.add_scalar("all_avg_KD_rate", all_avg_KD_rate, state["epochs"])
                 writer.add_scalar("val_loss_copy", val_loss_copy, state["epochs"])
-                writer.add_scalar("total_RL_reward", total_RL_reward, state["epochs"])
+                writer.add_scalar("total_r", total_r, state["epochs"])
                 writer.add_scalar("avg_origin_loss", avg_origin_loss, state["epochs"])
 
                 RL_checkpoint_path = os.path.join(args.checkpoint_dir, "RL_checkpoint_" + str(state["epochs"]))
-                utils.save_model(rl, optimizer_rl, state, RL_checkpoint_path)
+                utils.save_model(policy_network, PG_optimizer, state, RL_checkpoint_path)
             else:
                 choose_val=val_metrics
             
@@ -347,15 +328,17 @@ def main(args):
 
             # CHECKPOINT
             print("Saving model...")
-            utils.save_model(model, optimizer, state, checkpoint_path)
+            utils.save_model(student_KD, KD_optimizer, state, checkpoint_path)
             state["epochs"] += 1
     if args.test is False:
         writer.close()
+
+
     #### TESTING ####
     # Test loss
     print("TESTING")
     # eval metrics
-    test_metrics = evaluate(args, dataset["test"], model)
+    test_metrics = evaluate(args, dataset["test"], student_KD)
     test_pesq=test_metrics['pesq']
     test_stoi=test_metrics['stoi']
     test_noise=test_metrics['noise']
@@ -375,7 +358,7 @@ def main(args):
     utils.save_result(test_pesq,path,"pesq")
     utils.save_result(test_stoi,path,"stoi")
     utils.save_result(test_noise,path,"noise")
-
+    #### TESTING ####
     
 
 
@@ -383,7 +366,7 @@ def main(args):
 if __name__ == '__main__':
     ## TRAIN PARAMETERS
     model_base_path='/media/hd03/sutsaiwei_data/Wave-U-Net-Pytorch/model'
-    model_name = "down_size_student_myKD112"
+    model_name = "self_reward"
     parser = argparse.ArgumentParser()
     parser.add_argument('--cuda', action='store_true',
                         help='Use CUDA (default: False)')
