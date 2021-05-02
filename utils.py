@@ -22,7 +22,7 @@ def KD_compute_loss(model,teacher_model, inputs, targets, criterion,alpha, compu
     student_all_outputs = model(inputs)
     teacher_all_outputs = teacher_model(inputs).detach()
 
-    student_loss = criterion(student_all_outputs,targets,1-alpha) #####################################
+    student_loss = criterion(student_all_outputs,targets,1) #####################################
     KD_loss = criterion(student_all_outputs, teacher_all_outputs,alpha)
 
     total_loss = student_loss + KD_loss
@@ -54,21 +54,42 @@ def compute_loss(model, inputs, targets, criterion, compute_grad=False):
     avg_loss = loss.item() / float(len(all_outputs))
     return all_outputs, avg_loss 
 
-def normalize(inputs,MAX=10e-6 , MIN=0):
-    return (inputs-MIN)/(MAX-MIN)
+def range_method(memory_iter,R):
+    SORT, indices = torch.sort(memory_iter,0)
+    bo=normalize(R,0.2,-0.2)*32 #-0.5 # 0.25
+    # print('type',type(bo))
+    bo=int(bo)
+    label=31-bo
+    # print(f'R ={R} bo={bo} label={label}')
+    if label>=len(memory_iter):
+        label=len(memory_iter)-1
+    elif label<0:
+        label=0
+    bound=SORT[label]
+    norm_r = (memory_iter - bound) / (torch.max(memory_iter) - torch.min(memory_iter))
+    norm_r /= 32 * 691
+    norm_r = norm_r.cuda()
+    return norm_r
 
-def reward_norm(MAX_value,MIN_value,reward):
-    for i in range(len(reward)):
-        if torch.abs(reward[i])<MIN_value:
-            reward[i]=0
-            print('reward too small ')
-        if torch.abs(reward[i])>MAX_value:
-            print('reward too big ')
-            if(reward[i]>0):
-                reward[i]=MAX_value
-            else:
-                reward[i]=-MAX_value
-    return reward
+def value_method(memory_iter,R):
+    bound=(torch.max(memory_iter) - torch.min(memory_iter))*(1-normalize(R,0.1,-0.1))
+    bound+=torch.min(memory_iter)
+    norm_r = (memory_iter - bound) / (torch.max(memory_iter) - torch.min(memory_iter))
+    norm_r /= 32 * 691
+    norm_r = norm_r.cuda()
+    return norm_r
+
+def normalize(inputs,MAX,MIN):
+    
+    output = (inputs-MIN)/(MAX-MIN)
+    if output>1:
+        output=(MAX-MIN)/(MAX-MIN)
+        #print('normalize out range to 1')
+    elif output<0:
+        output=(MIN-MIN)/(MAX-MIN)
+        #print('normalize out range to 0')
+    return output
+
 
 
 ### SISNR ###
@@ -118,16 +139,19 @@ def sisnr_compute_loss(model, inputs, targets,batch_size, compute_grad=False):
     print(avg_sisnr)
     return all_outputs, Loss.item()
 
+
+### RL ###    
 def RL_compute_loss(RL_alpha, reward,criterion):
     label = torch.zeros(len(RL_alpha),1)
     label = label.cuda()
-    modify_reward=reward
-    # modify_reward=reward_norm(max_value,min_value,reward)
+
     for i in range(len(label)):
-        label[i]=RL_alpha[i].detach()+modify_reward[i] # 如果R>0
+        label[i]=RL_alpha[i].detach()+reward[i] 
         if label[i]>1:
+            # print(f'label bigger than 1 ,modify to 1')
             label[i]=1
         elif label[i]<0:
+            # print(f'label smaller than 0 ,modify to 0')
             label[i]=0
     loss = criterion(RL_alpha, label)
     loss.backward()
