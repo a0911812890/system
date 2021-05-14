@@ -18,12 +18,17 @@ def compute_output(model, inputs):
 
 
 ### MSE ###
-def KD_compute_loss(model,teacher_model, inputs, targets, criterion,alpha, compute_grad=False):
+def KD_compute_loss(model,teacher_model, inputs, targets, criterion,alpha, compute_grad=False,myKD_method=False):
     student_all_outputs = model(inputs)
     teacher_all_outputs = teacher_model(inputs).detach()
 
-    student_loss = criterion(student_all_outputs,targets,1) #####################################
-    KD_loss = criterion(student_all_outputs, teacher_all_outputs,alpha)
+    if myKD_method :
+        student_loss = criterion(student_all_outputs,targets,1) 
+        KD_loss = criterion(student_all_outputs, teacher_all_outputs,alpha)
+    else :
+        student_loss = criterion(student_all_outputs,targets,1-alpha) 
+        KD_loss = criterion(student_all_outputs, teacher_all_outputs,alpha)
+
 
     total_loss = student_loss + KD_loss
 
@@ -45,9 +50,8 @@ def loss_for_sample(model, inputs, targets):
 
 
 def compute_loss(model, inputs, targets, criterion, compute_grad=False):
-    loss = 0
     all_outputs = model(inputs)
-    loss += criterion(all_outputs, targets)
+    loss = criterion(all_outputs, targets)
     if compute_grad:
         loss.backward()
 
@@ -87,7 +91,7 @@ def normalize(inputs,MAX,MIN):
         #print('normalize out range to 1')
     elif output<0:
         output=(MIN-MIN)/(MAX-MIN)
-        #print('normalize out range to 0')
+        print('normalize out range to 0')
     return output
 
 
@@ -157,30 +161,68 @@ def RL_compute_loss(RL_alpha, reward,criterion):
     loss.backward()
     return loss
 
+def smoothing(rewards):
+    for i in range(len(rewards)):
+        if (rewards[i]>0):
+            rewards[i]=torch.sqrt(rewards[i])
+        elif (rewards[i]<0):
+            rewards[i]=-torch.sqrt(-rewards[i])
+    return rewards
 
+def get_rewards(backward_KD_loss,backward_copy_loss,backward_copy2_loss,student_KD_loss,len_data,decay):
+    improvement=torch.zeros([len(backward_KD_loss),1]).cuda() 
+    same=0
+    for i in range(len(backward_KD_loss)):
+        if((backward_KD_loss[i] < backward_copy_loss[i]) and(backward_KD_loss[i] < backward_copy2_loss[i]) ):
+            improvement[i]=backward_KD_loss[i] - backward_KD_loss[i]
+        elif((backward_copy_loss[i] < backward_KD_loss[i]) and (backward_copy_loss[i] < backward_copy2_loss[i])):
+            improvement[i]=backward_KD_loss[i] - backward_copy_loss[i]
+        elif((backward_copy2_loss[i] < backward_KD_loss[i]) and (backward_copy2_loss[i] < backward_copy_loss[i])):
+            improvement[i]=backward_copy2_loss[i] - backward_KD_loss[i] 
+        if((backward_copy_loss[i] < backward_KD_loss[i]) and(backward_KD_loss[i] < backward_copy2_loss[i])):
+            same+=1/len_data
+        elif ((backward_copy_loss[i] > backward_KD_loss[i]) and(backward_KD_loss[i] > backward_copy2_loss[i])):
+            same+=1/len_data
 
+    rewards = (improvement/student_KD_loss).detach()
+    rewards = smoothing(rewards)
+    # calculating before_decay
+    before_decay=torch.mean(rewards)
 
+    rewards = rewards/decay
+    
 
+    return rewards,same,before_decay
 
 
 ###   data process ###
+def mkdir_and_get_path(args):
+    if args.test == True:
+        model_name = "test"
+    else:
+        model_name = args.model_name
+    log_dir = os.path.join(args.model_base_path,model_name,'logs')
+    checkpoint_dir = os.path.join(args.model_base_path,model_name,'checkpoints')
+    result_dir = os.path.join(args.model_base_path,model_name,'results')
+    print(log_dir)
+    if not os.path.isdir(log_dir):
+        os.makedirs( log_dir )
+    if not os.path.isdir(checkpoint_dir):
+        os.makedirs( checkpoint_dir )
+    if not os.path.isdir(result_dir):
+        os.makedirs( result_dir )
+    if not os.path.isdir(result_dir):
+        os.makedirs( result_dir )
+    return log_dir,checkpoint_dir,result_dir
+
+
 def save_result(data,dir_path,name):
     
     with open(os.path.join(dir_path,name+ "_results.pkl"), "wb") as f:
         pickle.dump(data, f)
     data = pd.DataFrame(data)
     data.to_csv(os.path.join(dir_path,name+ "_results.csv"),sep=',')
-
-def args_to_csv(args,dir_path=""):
-    
-    arg = list()
-    if(dir_path==""):
-        dir_path=args.log_dir
-    x=vars(args)
-    for index,data in enumerate(x):
-        arg.append([data,x[data]])
-    arg=pd.DataFrame(arg)
-    arg.to_csv(os.path.join(dir_path,"args.csv"))
+   
 def worker_init_fn(worker_id): # This is apparently needed to ensure workers have different random seeds and draw different examples!
     np.random.seed(np.random.get_state()[1][0] + worker_id)
 

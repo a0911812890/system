@@ -156,6 +156,49 @@ class SeparationDataset(Dataset):
         return self.length
 
 #------------------------------Myself------------------------------#
+def get_ling_data_list(database_path):
+    samples = list()
+    noisy='noisy_testset'
+    clean='clean_testset'
+    noisy_path=os.path.join(database_path,noisy)
+    speech_path=os.path.join(database_path,clean)
+    lists=os.listdir(speech_path)
+    for i in range(len(lists)):
+        pair={"input" :os.path.join(noisy_path,lists[i]) ,"target" : os.path.join(speech_path,lists[i]) } 
+        samples.append(pair)
+    data={'noisy' : samples }
+    return data
+def get_enhance_folds(database_path):
+    subset_types = ["test"]
+    for subset_type in subset_types:
+        noisy_wav='noisy'
+        speech_wav='speech'
+        enhance_path='/media/hd03/sutsaiwei_data/data/mydata/enhance'
+        noisy_path=os.path.join(database_path,'outside_test1','noisy')
+        speech_path=os.path.join(database_path,'outside_test1','speech')
+        # all_path=database_path+'/'+subset+'/'+noisy_wav+'/wav/'
+        samples = list()
+        samples2 = list()
+        shift=1
+        enhance_list=os.listdir(enhance_path)
+        for i in range(len(enhance_list)):
+            enhance_file_name=enhance_list[i].split("_",5)
+            target_path=os.path.join(speech_path,enhance_file_name[1+shift]+"_"+enhance_file_name[2+shift]+"_"+enhance_file_name[3+shift]+".wav")
+            input_path=os.path.join(enhance_path,enhance_list[i])
+            pair={"input" :input_path ,"target" : target_path }
+            samples.append(pair)
+
+        shift=0
+        noisy_list=os.listdir(noisy_path)
+        for i in range(len(noisy_list)):
+            noisy_file_name=noisy_list[i].split("_",4)
+            target_path=os.path.join(speech_path,noisy_file_name[1+shift]+"_"+noisy_file_name[2+shift]+"_"+noisy_file_name[3+shift]+".wav")
+            input_path=os.path.join(noisy_path,noisy_list[i])
+            pair={"input" :input_path ,"target" : target_path }
+            samples2.append(pair)
+        data={'enhance' : samples ,'noisy' : samples2 }
+    # print(f'all train song:{(len(subsets[0]))} all val song:{(len(subsets[1]))}  all test song:{(len(subsets[2]))} ')
+    return data
 def get_folds(database_path,outside_test):
     database_path = database_path
     subsets = list()

@@ -8,6 +8,7 @@ import random
 from pypesq import pesq
 from utils import compute_loss
 from pystoi import stoi
+#import nussl
 def pad_data(audio, model):
     # audio.shape[1] 語音長度
     expected_outputs = audio.shape[1] #預期輸出
@@ -149,7 +150,128 @@ def predict_song(args, audio_path, model):
     return sources
 
 def evaluate(args, dataset, model):
+    dB_list_pesq=dict();dB_list_name_pesq=dict()
+    dB_list_stoi=dict();dB_list_name_stoi=dict()
+    dB_list_SISDR=dict();dB_list_name_SISDR=dict()
+    if args.outside_test :
+        for i in ['-7.5' ,'-2.5' ,'2.5' ,'7.5' ]:
+            dB_list_pesq[i] = list()
+            dB_list_name_pesq[i] = list()
 
+            dB_list_stoi[i] = list()
+            dB_list_name_stoi[i] = list()
+
+            dB_list_SISDR[i] = list()
+            dB_list_name_SISDR[i] = list()
+            test_noise_file="outside_test/noise"
+    else:
+        for i in ['-10','-5' ,'0' ,'5' ,'10' ]:
+            dB_list_pesq[i] = list()
+            dB_list_name_pesq[i] = list()
+
+            dB_list_stoi[i] = list()
+            dB_list_name_stoi[i] = list()
+
+            dB_list_SISDR[i] = list()
+            dB_list_name_SISDR[i] = list()
+            test_noise_file="test/noise"
+    noise_dir=os.path.join(args.dataset_dir,test_noise_file)
+    noise_file = os.listdir(noise_dir)
+    dB_noise_pesq = {}
+    for i in noise_file:
+        dB_noise_pesq[os.path.splitext(i)[0]]=list()
+    
+    model.eval()
+    with torch.no_grad():
+        with tqdm(total=len(dataset)) as pbar:
+            for example in dataset:
+                # Load source references in their original sr and channel number
+                input_data = nussl.AudioSignal(example['input'])
+                target_data = nussl.AudioSignal(example['target'])
+                
+                # Predict using mixture
+                pred_sources  = predict_song(args, example["input"], model).flatten()
+
+                file_name=os.path.basename(example['input'])
+                
+                #utils.write_wav(os.path.join(args.output,'enhance_'+file_name), pred_sources.T, args.sr)
+                fname,ext = os.path.splitext(file_name)
+                text=fname.split("_",4)
+                # Evaluate pesq
+                input_sources=input_data.audio_data.flatten()
+                target_sources=target_data.audio_data.flatten()
+
+                input_pesq=pesq(target_sources, input_sources,16000)
+                enhance_pesq=pesq(target_sources, pred_sources ,16000)
+                # Evaluate stoi
+                input_stoi = stoi(target_sources, input_sources, 16000, extended=False)
+                enhance_stoi = stoi(target_sources, pred_sources, 16000, extended=False)
+                # scores[target_sources.path_to_input_file]['SI-SDR'][0]
+                enhance_data=nussl.AudioSignal(audio_data_array=pred_sources,sample_rate=16000)
+                evaluator=nussl.evaluation.BSSEvalScale(target_data  ,input_data )
+                scores = evaluator.evaluate()
+                input_SISDR=scores[target_data.path_to_input_file]['SI-SDR'][0]
+                evaluator=nussl.evaluation.BSSEvalScale(target_data  ,enhance_data )
+                scores = evaluator.evaluate()
+                enhance_SISDR=scores[target_data.path_to_input_file]['SI-SDR'][0]
+
+
+                filename=os.path.basename(example['input'])
+                noise_name=filename.split("_")[0]
+                dB_noise_pesq[noise_name].append([input_pesq,enhance_pesq,enhance_pesq-input_pesq])
+                
+                dB_list_pesq[text[4]].append([input_pesq,enhance_pesq,enhance_pesq-input_pesq])
+                dB_list_name_pesq[text[4]].append([[input_pesq,enhance_pesq,enhance_pesq-input_pesq],file_name])
+
+                dB_list_stoi[text[4]].append([input_stoi,enhance_stoi,enhance_stoi-input_stoi])
+                dB_list_name_stoi[text[4]].append([[input_stoi,enhance_stoi,enhance_stoi-input_stoi],file_name])
+
+                dB_list_SISDR[text[4]].append([input_SISDR,enhance_SISDR,enhance_SISDR-input_SISDR])
+                dB_list_name_SISDR[text[4]].append([[input_SISDR,enhance_SISDR,enhance_SISDR-input_SISDR],file_name])
+                pbar.update(1)
+        num=len(dB_list_pesq)
+        dB_list_name_pesq['avg'] = 0
+        dB_list_name_stoi['avg'] = 0
+        dB_list_name_SISDR['avg'] = 0
+        improve_pesq = 0
+        for key, value in dB_list_pesq.items():
+            avg_pesq=np.mean(value,0)
+            pesq_list=[[avg_pesq[0],avg_pesq[1],avg_pesq[2]],"avg_pesq"]
+            dB_list_name_pesq[key].append([pesq_list])
+            dB_list_name_pesq['avg']+=avg_pesq[1]/num
+            improve_pesq+=avg_pesq[2]/num
+        for key, value in dB_list_stoi.items():
+            avg_stoi=np.mean(value,0)
+            stoi_list=[[avg_stoi[0],avg_stoi[1],avg_stoi[2]],"avg_stoi"]
+            dB_list_name_stoi[key].append([stoi_list])
+            dB_list_name_stoi['avg']+=avg_stoi[1]/num
+        for key, value in dB_list_SISDR.items():
+            avg_SISDR=np.mean(value,0)
+            SISDR_list=[[avg_SISDR[0],avg_SISDR[1],avg_SISDR[2]],"avg_SISDR"]
+            dB_list_name_SISDR[key].append([SISDR_list])
+            dB_list_name_SISDR['avg']+=avg_SISDR[1]/num
+
+            
+        noise_avg=list()
+        for key, value in dB_noise_pesq.items():
+            avg_pesq=np.mean(value,0)
+            noise_avg.append([key,avg_pesq])
+            # if key==dB_noise_pesq.keys[-1]:
+            #     print(noise_avg)
+    print(noise_avg)
+   
+    pesq_avg=dB_list_name_pesq['avg']
+    stoi_avg=dB_list_name_stoi['avg']
+    SISDR_avg=dB_list_name_SISDR['avg']
+    print(f'pesq_avg:{pesq_avg} stoi_avg:{stoi_avg} improve_pesq:{improve_pesq} SISDR:{SISDR_avg} ')
+    return {'pesq' : dB_list_name_pesq ,'stoi' : dB_list_name_stoi,'SISDR' : dB_list_name_SISDR,'noise':noise_avg}
+
+
+
+
+
+
+def evaluate_without_noisy(args, dataset, model):
     dB_list_pesq=dict();dB_list_name_pesq=dict();dB_list_stoi=dict();dB_list_name_stoi=dict()
     if args.outside_test :
         for i in ['-7.5' ,'-2.5' ,'2.5' ,'7.5' ]:
@@ -179,63 +301,83 @@ def evaluate(args, dataset, model):
             for example in dataset:
                 # Load source references in their original sr and channel number
                 target_sources = utils.load(example['target'], sr=16000, mono=True)[0].flatten()
-                input_sources = utils.load(example['input'], sr=16000, mono=True)[0].flatten()
-
                 # Predict using mixture
                 pred_sources  = predict_song(args, example["input"], model).flatten()
-                # print(f'type : target_sources:{type(target_sources)} pred_sources:{type(pred_sources)}')
-                # print(f'shape : target_sources:{target_sources.shape} pred_sources:{pred_sources.shape} ')
-                output_folder = args.output
+                # write wav
                 file_name=os.path.basename(example['input'])
-                # utils.write_wav(os.path.join(output_folder,'enhance_'+file_name), pred_sources.T, args.sr)
+                if args.write_to_wav:
+                    utils.write_wav(os.path.join(args.output,'enhance_'+file_name), pred_sources.T, args.sr)
                 fname,ext = os.path.splitext(file_name)
                 text=fname.split("_",4)
                 # Evaluate pesq
-                input_pesq=round(pesq(target_sources, input_sources,16000),2)
-                enhance_pesq=round(pesq(target_sources, pred_sources ,16000),2)
-
+                enhance_pesq=pesq(target_sources, pred_sources ,16000)
                 # Evaluate stoi
-                input_stoi = stoi(target_sources, input_sources, 16000, extended=False)
                 enhance_stoi = stoi(target_sources, pred_sources, 16000, extended=False)
-                # print(f'input_pesq:{input_pesq} enhance_pesq:{enhance_pesq} improve_pesq:{enhance_pesq-input_pesq} ')
+
                 filename=os.path.basename(example['input'])
                 noise_name=filename.split("_")[0]
-                dB_noise_pesq[noise_name].append([input_pesq,enhance_pesq,enhance_pesq-input_pesq])
-                #print(noise_name)
-                dB_list_pesq[text[4]].append([input_pesq,enhance_pesq,enhance_pesq-input_pesq])
-                dB_list_name_pesq[text[4]].append([[input_pesq,enhance_pesq,enhance_pesq-input_pesq],example['input']])
+                dB_noise_pesq[noise_name].append([enhance_pesq])
 
-                dB_list_stoi[text[4]].append([input_stoi,enhance_stoi,enhance_stoi-input_stoi])
-                dB_list_name_stoi[text[4]].append([[input_stoi,enhance_stoi,enhance_stoi-input_stoi],example['input']])
+                dB_list_pesq[text[4]].append(enhance_pesq)
+                dB_list_name_pesq[text[4]].append([enhance_pesq,filename])
+
+                dB_list_stoi[text[4]].append(enhance_stoi)
+                dB_list_name_stoi[text[4]].append([enhance_stoi,filename])
                 pbar.update(1)
 
-        pesq_avg = 0
-        stoi_avg = 0
-        improve_pesq =0
+        dB_list_name_pesq['avg'] = 0
+        dB_list_name_stoi['avg'] = 0
+        num=len(dB_list_pesq)
         for key, value in dB_list_pesq.items():
             avg_pesq=np.mean(value,0)
-            pesq_list=[[avg_pesq[0],avg_pesq[1],avg_pesq[2]],"avg_pesq"]
-            dB_list_name_pesq[key].append([pesq_list])
-            pesq_avg+=avg_pesq[1]
-            improve_pesq+=avg_pesq[2]
+            dB_list_name_pesq[key].append([avg_pesq,"avg_pesq"])
+            dB_list_name_pesq['avg']+=avg_pesq/num
+
         for key, value in dB_list_stoi.items():
             avg_stoi=np.mean(value,0)
-            stoi_list=[[avg_stoi[0],avg_stoi[1],avg_stoi[2]],"avg_stoi"]
-            dB_list_name_stoi[key].append([stoi_list])
-            stoi_avg+=avg_stoi[1]
+            dB_list_name_stoi[key].append([avg_stoi,"avg_stoi"])
+            dB_list_name_stoi['avg']+=avg_stoi/num
+
         noise_avg=list()
         for key, value in dB_noise_pesq.items():
             avg_pesq=np.mean(value,0)
             noise_avg.append([key,avg_pesq])
-            # if key==dB_noise_pesq.keys[-1]:
-            #     print(noise_avg)
+
     print(noise_avg)
-    num=len(dB_list_pesq)
-    dB_list_name_pesq['avg']=pesq_avg/num
-    dB_list_name_stoi['avg']=stoi_avg/num
-    print(f'pesq_avg:{pesq_avg/num} stoi_avg:{stoi_avg/num} improve_pesq:{improve_pesq/num}')
+    pesq_avg=dB_list_name_pesq['avg']
+    stoi_avg=dB_list_name_stoi['avg']
+    print(f'pesq_avg:{pesq_avg} stoi_avg:{stoi_avg} ')
     return {'pesq' : dB_list_name_pesq ,'stoi' : dB_list_name_stoi,'noise':noise_avg}
 
+def ling_evaluate(args, dataset, model):
+    model.eval()
+    length = len(dataset)
+    print(length)
+    all_1=np.zeros([length])
+    all_2=np.zeros([length])
+    i=0
+    with torch.no_grad():
+        with tqdm(total=len(dataset)) as pbar:
+            for example in dataset:
+                # Load source references in their original sr and channel number
+                target_sources = utils.load(example['target'], sr=16000, mono=True)[0].flatten()
+                #input_sources = utils.load(example['input'], sr=16000, mono=True)[0].flatten()
+
+                # Predict using mixture
+                pred_sources  = predict_song(args, example["input"], model).flatten()
+                # Evaluate pesq
+                #input_pesq=pysepm.pesq(target_sources, input_sources,16000)[1]
+                enhance_pesq=pysepm.pesq(target_sources, pred_sources ,16000)[1]
+                all_1[i]=enhance_pesq
+                #all_2[i]=enhance_pesq
+                # Evaluate stoi
+                # input_stoi = stoi(target_sources, input_sources, 16000, extended=False)
+                # enhance_stoi = stoi(target_sources, pred_sources, 16000, extended=False)
+                # print(f'input_pesq:{input_pesq} enhance_pesq:{enhance_pesq} improve_pesq:{enhance_pesq-input_pesq} ')
+                pbar.update(1)
+                i+=1
+    print(np.mean(all_1),np.mean(all_2))
+    return 
 
 def validate(args, model, criterion, test_data):
     # PREPARE DATA

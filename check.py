@@ -11,74 +11,125 @@ import soundfile
 from pypesq import pesq
 import pandas as pd
 from pystoi import stoi
-# mix_audio2, mix_sr = librosa.load('audio_examples/Cristina Vane - So Easy/mix.mp3', sr=None, mono=False)
-# mix_audio, mix_sr = librosa.load('audio_examples/Cristina Vane - So Easy/mix.mp3', sr=None, mono=False)
-# mix_channels = mix_audio.shape[0]
-# mix_len = mix_audio.shape[1]
-# print(mix_channels,mix_len,mix_audio.shape())
-# utils.write_wav('test.wav', mix_audio, mix_sr)
-#soundfile.write('audio_examples/Cristina Vane - So Easy/mix.mp3', audio, sr, "PCM_16")
-# y, curr_sr = librosa.load(path, sr=sr, mono=mono, res_type='kaiser_fast', offset=offset, duration=duration)
+from data import  SeparationDataset,  crop ,get_folds,get_enhance_folds,get_ling_data_list
+from torch.utils.data import Dataset
+import time
+import pysepm,nussl
+#####################################################################################################################
+input_list=[]
+target_list=[]
 
-# path = '/media/hd03/sutsaiwei_data/Wave-U-Net-Pytorch/timit_10'
-# subsets = list()
-# for subset in ["train", "test"]:
-#     noisy_wav='noisy'
-#     speech_wav='speech'
-#     all_path=path+'/'+subset+'/'+noisy_wav+'/wav/'
-#     samples = list()
-#     noisy_list=os.listdir(all_path)
-#     for i in range(10):
-#         t=noisy_list[i].split("_",4)
-#         target_path=path+'/'+subset+'/'+speech_wav+'/wav/'+t[1]+"_"+t[2]+"_"+t[3]+".wav"
-#         pair={"input" :all_path+noisy_list[i],"target" : target_path }
-#         samples.append(pair)
-#     subsets.append(samples)
-# data={'train' : subsets[0], 'test' : subsets[1]}
-# print(data['test'])
-    # print(len(y),curr_sr)
-    # print(len(y2),curr_sr2)
-    # print(np.array_equal(y, y2))
-
-# a='/media/hd03/sutsaiwei_data/data/mydata/train/speech/DR1_FETB0_SX68.wav'
-# b='/media/hd03/sutsaiwei_data/data/mydata/train/noisy/destroyerops_DR1_FETB0_SX68_10.wav'
-# c='/media/hd03/sutsaiwei_data/data/mydata/train/noisy/destroyerops_DR1_FETB0_SX68_-10.wav'
-# target, curr_sr = librosa.load(os.path.join(a), sr=16000, mono=True)
-# enhance, curr_sr = librosa.load(os.path.join(b), sr=16000, mono=True)
-# noisy, curr_sr = librosa.load(os.path.join(c), sr=16000, mono=True)
-
-# t=np.stack((target,target),0)
-# s=np.stack((enhance,enhance),0)
-# # d = stoi(target, noisy, 16000, extended=False)
-# # d2 = stoi(target, enhance, 16000, extended=False)
-# # print(d,d2)
-# print(pesq( t, s,16000))
-# print(pesq( target, noisy,16000))
-
-from tqdm import tqdm
-import numpy as np
-import soundfile as sf
-import librosa
-import random
-import os
-path='/media/hd03/sutsaiwei_data/data/mydata/outside_test/'
-speech_file = os.listdir(path+'speech')
-noise_file = os.listdir(path+'noise')
-with tqdm(total=4*len(speech_file)*len(noise_file)) as pbar:
-    for i in speech_file:
-        for j in noise_file:
-            for snr in [-7.5,-2.5,2.5,7.5]:
-                speech, a_sr = librosa.load(path+'speech/'+i, sr=16000)
-                noise, b_sr = librosa.load(path+'noise/'+j, sr=16000)
-                start = random.randint(0, noise.shape[0] - speech.shape[0])
-                n_b = noise[start:start+speech.shape[0]]
+input_sources = nussl.AudioSignal('/media/hd03/sutsaiwei_data/data/mydata/check/buccaneer1_DR1_FDAC1_SI1474_-7.5.wav')
+target_sources= nussl.AudioSignal('/media/hd03/sutsaiwei_data/data/mydata/check/DR1_FDAC1_SI1474.wav')
+evaluator=nussl.evaluation.BSSEvalScale(target_sources,input_sources )
+scores = evaluator.evaluate()
+print(scores[target_sources.path_to_input_file]['SI-SDR'][0])
 
 
-                sum_s = np.sum(speech ** 2)
-                sum_n = np.sum(n_b ** 2)
-                x = np.sqrt(sum_s/(sum_n * pow(10, snr/10)))
-                after_noise = x * n_b
-                target = speech + after_noise
-                output_file=f'{path}noisy/{j[:-4]}_{i[:-4]}_{snr}.wav'
-                sf.write(output_file, target, 16000)
-                pbar.update(1)
+# dataset = get_ling_data_list('/media/hd03/sutsaiwei_data/data/mydata/ling_data')
+# length = len(dataset['noisy'])
+# print(length)
+# all_1=np.zeros([length])
+# all_2=np.zeros([length])
+# for i,example in enumerate(tqdm(dataset['noisy'])):
+#     print(example['input'],example['target'])
+#     input_sources,_ = librosa.load(example['input'], sr=16000)
+#     target_sources,_ = librosa.load(example['target'], sr=16000)
+#     input_pesq=pesq(target_sources, input_sources,16000)
+#     all_1[i]=input_pesq
+# print(np.mean(all_1))
+################################################################################################
+
+# dataset = get_enhance_folds('/media/hd03/sutsaiwei_data/data/mydata')
+# length = len(dataset['noisy'])
+# print(length)
+# all_1=np.zeros([length])
+# all_2=np.zeros([length])
+# for i,example in enumerate(tqdm(dataset['noisy'])):
+#     print(example['input'],example['target'])
+#     input_sources,_ = librosa.load(example['input'], sr=16000)
+#     target_sources,_ = librosa.load(example['target'], sr=16000)
+#     input_pesq=pesq(target_sources, input_sources,16000)
+#     all_1[i]=input_pesq
+# print(np.mean(all_1))
+
+# for i,example in enumerate(tqdm(dataset['enhance'])):
+#     target_sources = utils.load(example['target'], sr=16000, mono=True)[0].flatten()
+#     input_sources = utils.load(example['input'], sr=16000, mono=True)[0].flatten()
+#     input_pesq=pesq(target_sources, input_sources,16000)
+#     all_2[i]=input_pesq
+# print(np.mean(all_2))
+
+
+########################################################################################################
+# class myDataset(Dataset):
+#     def __init__(self, dataset,sr,channels):
+#         self.data=[]
+#         self.sr = sr
+#         self.channels = channels
+#         self.length = len(dataset)
+#         super(myDataset, self).__init__()
+#         for idx, example in enumerate(tqdm(dataset)):
+#             # Load mix
+#             mix_audio = utils.load(example["input"], sr=self.sr, mono=(self.channels == 1))[0]
+#             source_audios = utils.load(example["target"], sr=self.sr, mono=(self.channels == 1))[0]
+#             temp = {'inputs' : None, 'targets' : None ,'file_name' : None}
+#             temp['inputs']=(mix_audio)
+#             temp['targets']=(source_audios)
+#             temp['file_name']=(example["input"])
+#             self.data.append(temp)
+#     def __getitem__(self, index):
+#         return self.data[index]['inputs'], self.data[index]['targets'], self.data[index]['file_name']
+#     def __len__(self):
+#         return  self.length
+# dataset_list = get_folds('/media/hd03/sutsaiwei_data/data/mydata',True)['test']
+# Dataset = myDataset(dataset_list,16000,1)
+# dataloader = torch.utils.data.DataLoader(Dataset, batch_size=1, shuffle=False, num_workers=8, worker_init_fn=utils.worker_init_fn,pin_memory=True)
+# all_1=np.zeros([len(dataloader)])
+
+# with tqdm(total=len(dataloader)) as pbar:
+#     for example_num, (x, targets,file_names) in enumerate(dataloader): 
+#         # print(x.shape)
+#         # print(targets.shape)
+#         input_pesq=pesq(x.flatten(), targets.flatten(),16000) 
+#         all_1[example_num]=input_pesq
+#         print(input_pesq)
+#         pbar.update()
+# print(f'avg = {np.mean(all_1)}')
+
+
+
+
+
+
+########################################################################################################
+
+
+
+# from tqdm import tqdm
+# import numpy as np
+# import soundfile as sf
+# import librosa
+# import random
+# import os
+# path='/media/hd03/sutsaiwei_data/data/mydata/outside_test/'
+# speech_file = os.listdir(path+'speech')
+# noise_file = os.listdir(path+'noise')
+# with tqdm(total=4*len(speech_file)*len(noise_file)) as pbar:
+#     for i in speech_file:
+#         for j in noise_file:
+#             for snr in [-7.5,-2.5,2.5,7.5]:
+#                 speech, a_sr = librosa.load(path+'speech/'+i, sr=16000)
+#                 noise, b_sr = librosa.load(path+'noise/'+j, sr=16000)
+#                 start = random.randint(0, noise.shape[0] - speech.shape[0])
+#                 n_b = noise[start:start+speech.shape[0]]
+
+
+#                 sum_s = np.sum(speech ** 2)
+#                 sum_n = np.sum(n_b ** 2)
+#                 x = np.sqrt(sum_s/(sum_n * pow(10, snr/10)))
+#                 after_noise = x * n_b
+#                 target = speech + after_noise
+#                 output_file=f'{path}noisy/{j[:-4]}_{i[:-4]}_{snr}.wav'
+#                 sf.write(output_file, target, 16000)
+#                 pbar.update(1)

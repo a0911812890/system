@@ -10,3 +10,5 @@
 # note:
 1. 請現在 train.py 設定 model_name 確保不會覆蓋 舊模型
 2. 下--test 請把model_name改為test
+
+
