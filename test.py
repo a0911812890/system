@@ -8,6 +8,7 @@ import random
 from pypesq import pesq
 from utils import compute_loss
 from pystoi import stoi
+import nussl
 #import nussl
 def pad_data(audio, model):
     # audio.shape[1] 語音長度
@@ -214,11 +215,11 @@ def evaluate(args, dataset, model):
                 evaluator=nussl.evaluation.BSSEvalScale(target_data  ,enhance_data )
                 scores = evaluator.evaluate()
                 enhance_SISDR=scores[target_data.path_to_input_file]['SI-SDR'][0]
-
+                
 
                 filename=os.path.basename(example['input'])
                 noise_name=filename.split("_")[0]
-                dB_noise_pesq[noise_name].append([input_pesq,enhance_pesq,enhance_pesq-input_pesq])
+                dB_noise_pesq[noise_name].append([input_pesq,enhance_pesq,enhance_pesq-input_pesq,enhance_SISDR,enhance_SISDR-input_SISDR])
                 
                 dB_list_pesq[text[4]].append([input_pesq,enhance_pesq,enhance_pesq-input_pesq])
                 dB_list_name_pesq[text[4]].append([[input_pesq,enhance_pesq,enhance_pesq-input_pesq],file_name])
@@ -255,15 +256,17 @@ def evaluate(args, dataset, model):
         noise_avg=list()
         for key, value in dB_noise_pesq.items():
             avg_pesq=np.mean(value,0)
-            noise_avg.append([key,avg_pesq])
+            noise_avg.append([key,np.round(avg_pesq,decimals=3)])
             # if key==dB_noise_pesq.keys[-1]:
             #     print(noise_avg)
     print(noise_avg)
-   
+    dB_list_name_pesq['avg']=round(dB_list_name_pesq['avg'],3)
+    dB_list_name_stoi['avg']=round(dB_list_name_stoi['avg'],3)
+    dB_list_name_SISDR['avg']=round(dB_list_name_SISDR['avg'],3)
     pesq_avg=dB_list_name_pesq['avg']
     stoi_avg=dB_list_name_stoi['avg']
     SISDR_avg=dB_list_name_SISDR['avg']
-    print(f'pesq_avg:{pesq_avg} stoi_avg:{stoi_avg} improve_pesq:{improve_pesq} SISDR:{SISDR_avg} ')
+    print(f'pesq_avg:{pesq_avg} stoi_avg:{stoi_avg} improve_pesq:{round(improve_pesq,3)} SISDR:{SISDR_avg} ')
     return {'pesq' : dB_list_name_pesq ,'stoi' : dB_list_name_stoi,'SISDR' : dB_list_name_SISDR,'noise':noise_avg}
 
 
@@ -388,15 +391,13 @@ def validate(args, model, criterion, test_data):
     # pesq_test=(random.randrange(len(test_data)))
     # VALIDATE
     model.eval()
+    
     # print('np.zeros(len(test_data) // args.batch_size)',np.zeros(len(test_data) // args.batch_size))
     len_data=len(test_data) // args.batch_size
-    avg_input_pesq=np.zeros(len_data+1)
-    avg_enhance_pesq=np.zeros(len_data+1)
-    avg_improve_pesq=np.zeros(len_data+1)
+    matrics = { 'PESQ' : [np.zeros(len_data+1),np.zeros(len_data+1),np.zeros(len_data+1)] ,
+                'STOI' : [np.zeros(len_data+1),np.zeros(len_data+1),np.zeros(len_data+1)] ,
+                'SISDR' : [np.zeros(len_data+1),np.zeros(len_data+1),np.zeros(len_data+1)]  }
 
-    avg_input_stoi=np.zeros(len_data+1)
-    avg_enhance_stoi=np.zeros(len_data+1)
-    avg_improve_stoi=np.zeros(len_data+1)
     total_loss = 0.
     with tqdm(total=len(test_data) // args.batch_size) as pbar, torch.no_grad():
         for example_num, (x, targets) in enumerate(dataloader):
@@ -406,7 +407,7 @@ def validate(args, model, criterion, test_data):
 
             outputs, avg_loss = compute_loss(model, x, targets, criterion)
             total_loss += (1. / float(example_num + 1)) * (avg_loss - total_loss)
-
+            
             input_centre = torch.mean(x[0, :, model.shapes["output_start_frame"]:model.shapes["output_end_frame"]], 0)
             
             target=torch.mean(targets[0], 0).cpu().numpy()
@@ -416,33 +417,51 @@ def validate(args, model, criterion, test_data):
             values1 = stoi(target, inputs, 16000, extended=False)
             values2 = stoi(target, pred, 16000, extended=False)
             if(~np.isnan(values1) and  ~np.isnan(values2) ):
-                avg_input_stoi[example_num]=values1
-                avg_enhance_stoi[example_num]=values2
-                avg_improve_stoi[example_num]=values2 - values1
+                matrics['STOI'][0][example_num]=values1
+                matrics['STOI'][1][example_num]=values2
+                matrics['STOI'][2][example_num]=values2 - values1
 
             # pesq
             values1=round(pesq(target, inputs,16000),2)
             values2=round(pesq(target, pred ,16000),2)
             if(~np.isnan(values1) and  ~np.isnan(values2) ):
-                avg_input_pesq[example_num]=values1
-                avg_enhance_pesq[example_num]=values2
-                avg_improve_pesq[example_num]=values2 - values1
-
-            # print(values1,values2,values2 -values1)
+                matrics['PESQ'][0][example_num]=values1
+                matrics['PESQ'][1][example_num]=values2
+                matrics['PESQ'][2][example_num]=values2 - values1
+            # SISDR
+            enhance_data=nussl.AudioSignal(audio_data_array=pred,sample_rate=16000)
+            input_data=nussl.AudioSignal(audio_data_array=inputs,sample_rate=16000)
+            target_data=nussl.AudioSignal(audio_data_array=target,sample_rate=16000)
+            evaluator=nussl.evaluation.BSSEvalScale(target_data  ,input_data )
+            scores = evaluator.evaluate()
+            values1=scores['source_0']['SI-SDR'][0]
+            evaluator=nussl.evaluation.BSSEvalScale(target_data  ,enhance_data )
+            scores = evaluator.evaluate()
+            values2=scores['source_0']['SI-SDR'][0]
+            if(~np.isnan(values1) and  ~np.isnan(values2) ):
+                matrics['SISDR'][0][example_num]=values1
+                matrics['SISDR'][1][example_num]=values2
+                matrics['SISDR'][2][example_num]=values2 - values1
+            
             pbar.set_description("Current loss: {:.4f}".format(total_loss))
             pbar.update(1)
-    val_input_pesq=np.nanmean(avg_input_pesq)
-    val_input_stoi=np.nanmean(avg_input_stoi)
-    val_improve_pesq=np.nanmean(avg_improve_pesq)
-    val_improve_stoi=np.nanmean(avg_improve_stoi)
-    val_enhance_pesq=np.nanmean(avg_enhance_pesq)
-    val_enhance_stoi=np.nanmean(avg_enhance_stoi)
-
-    print(f'val_input_pesq={np.nanmean(avg_input_pesq)}')
+    val_improve_pesq=np.nanmean(matrics['PESQ'][2])
+    val_improve_stoi=np.nanmean(matrics['STOI'][2])
+    val_improve_SISDR=np.nanmean(matrics['SISDR'][2])
+    val_enhance_pesq=np.nanmean(matrics['PESQ'][1])
+    val_enhance_stoi=np.nanmean(matrics['STOI'][1])
+    val_enhance_SISDR=np.nanmean(matrics['SISDR'][1])
+    val_input_pesq=np.nanmean(matrics['PESQ'][0])
+    val_input_STOI=np.nanmean(matrics['STOI'][0])
+    val_input_SISDR=np.nanmean(matrics['SISDR'][0])
+    print(f'val_input_pesq={val_input_pesq}')
     print(f'val_improve_pesq={val_improve_pesq}')
 
-    print(f'val_input_stoi={np.nanmean(avg_input_stoi)}')
+    print(f'val_input_STOI={val_input_STOI}')
     print(f'val_improve_stoi={val_improve_stoi}')
+
+    print(f'val_input_SISDR={val_input_SISDR}')
+    print(f'val_improve_SISDR={val_improve_SISDR}')
 
     # writer.add_scalar("val_enhance_pesq", np.nanmean(avg_enhance_pesq), state["epochs"])
     # writer.add_scalar("val_improve_pesq", np.nanmean(avg_improve_pesq), state["epochs"])
@@ -450,4 +469,4 @@ def validate(args, model, criterion, test_data):
     # writer.add_scalar("val_enhance_stoi", np.nanmean(avg_enhance_stoi), state["epochs"])
     # writer.add_scalar("val_improve_stoi", np.nanmean(avg_improve_stoi), state["epochs"])
     
-    return total_loss,[val_enhance_pesq,val_improve_pesq,val_enhance_stoi,val_improve_stoi]
+    return total_loss,[val_enhance_pesq,val_improve_pesq,val_enhance_stoi,val_improve_stoi,val_enhance_SISDR,val_improve_SISDR]

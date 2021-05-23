@@ -1,11 +1,10 @@
 {
-     "model_name": "alpha1",
+     "model_name": "alpha0_75",
      "model_base_path": "/media/hd03/sutsaiwei_data/Wave-U-Net-Pytorch/model",
      "cuda": true,
      "outside_test": false,
      "test": false,
      "KD_method": "A",
-     "alpha": 1,
      "num_workers": 16,
      "features": 12,
      "dataset_dir": "/media/hd03/sutsaiwei_data/data/mydata",

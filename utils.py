@@ -18,17 +18,18 @@ def compute_output(model, inputs):
 
 
 ### MSE ###
-def KD_compute_loss(model,teacher_model, inputs, targets, criterion,alpha, compute_grad=False,myKD_method=False):
+def KD_compute_loss(model,teacher_model, inputs, targets, criterion,alpha, compute_grad=False,KD_method='A'):
     student_all_outputs = model(inputs)
     teacher_all_outputs = teacher_model(inputs).detach()
 
-    if myKD_method :
+    if KD_method =='A':
+        student_loss = criterion(student_all_outputs,targets,1-alpha) 
+        KD_loss = criterion(student_all_outputs, teacher_all_outputs,alpha)
+    elif  KD_method =='B':
         student_loss = criterion(student_all_outputs,targets,1) 
         KD_loss = criterion(student_all_outputs, teacher_all_outputs,alpha)
     else :
-        student_loss = criterion(student_all_outputs,targets,1-alpha) 
-        KD_loss = criterion(student_all_outputs, teacher_all_outputs,alpha)
-
+        raise Exception(f"unknown KD_method{KD_method} !!! (A or B)")
 
     total_loss = student_loss + KD_loss
 
@@ -38,7 +39,7 @@ def KD_compute_loss(model,teacher_model, inputs, targets, criterion,alpha, compu
     student_avg_loss = student_loss.item() / float(len(student_all_outputs))
     total_avg_loss = total_loss.item() / float(len(student_all_outputs))
     KD_avg_loss = KD_loss.item() / float(len(student_all_outputs))
-    return student_all_outputs, student_avg_loss  ,total_avg_loss ,KD_loss
+    return student_all_outputs, student_avg_loss  ,total_avg_loss ,KD_avg_loss
 
 
 def loss_for_sample(model, inputs, targets):
@@ -204,7 +205,6 @@ def mkdir_and_get_path(args):
     log_dir = os.path.join(args.model_base_path,model_name,'logs')
     checkpoint_dir = os.path.join(args.model_base_path,model_name,'checkpoints')
     result_dir = os.path.join(args.model_base_path,model_name,'results')
-    print(log_dir)
     if not os.path.isdir(log_dir):
         os.makedirs( log_dir )
     if not os.path.isdir(checkpoint_dir):

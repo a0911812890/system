@@ -18,12 +18,19 @@ import pysepm,nussl
 #####################################################################################################################
 input_list=[]
 target_list=[]
-
+inputs=np.random.rand(1,16009)
+input_data=nussl.AudioSignal(audio_data_array=inputs,sample_rate=16000)
+target=np.random.rand(1,16009)
+target_data=nussl.AudioSignal(audio_data_array=target,sample_rate=16000)
 input_sources = nussl.AudioSignal('/media/hd03/sutsaiwei_data/data/mydata/check/buccaneer1_DR1_FDAC1_SI1474_-7.5.wav')
 target_sources= nussl.AudioSignal('/media/hd03/sutsaiwei_data/data/mydata/check/DR1_FDAC1_SI1474.wav')
-evaluator=nussl.evaluation.BSSEvalScale(target_sources,input_sources )
+evaluator=nussl.evaluation.BSSEvalScale(target_data,input_data )
 scores = evaluator.evaluate()
-print(scores[target_sources.path_to_input_file]['SI-SDR'][0])
+
+print(scores)
+# print(scores.path_to_input_file)
+print(scores['source_0']['SI-SDR'][0])
+# print(scores[target_data.path_to_input_file]['SI-SDR'][0])
 
 
 # dataset = get_ling_data_list('/media/hd03/sutsaiwei_data/data/mydata/ling_data')

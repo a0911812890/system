@@ -4,7 +4,7 @@
 ## outside_test
 * testing model with outside_test
 ## myKD_method
-* if set it to True,KD method is (1,alpha) , else (1-alpha,alpha) (default: False)
+* if set it to false,KD method is A plan (1-alpha,alpha) , else B plan (1,alpha) (default: False)
 ## KD_to_copy
 * KD make a copy to copy
 ## num_workers
