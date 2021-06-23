@@ -74,7 +74,8 @@ def main(args):
         with open(os.path.join(log_dir,'config.json'), 'w') as f:
             json.dump(args.__dict__, f, indent=5)
         print('saving commandline_args')
-
+        student_size = sum(p.numel() for p in student_KD.parameters())
+        print('student_parameter count: ', str(student_size))
         if args.teacher_model is not None:
             teacher_num_features = [24*i for i in range(1, args.levels+2+args.levels_without_sample)] 
             teacher_model = Waveunet(args.channels, teacher_num_features, args.channels,levels=args.levels, 
@@ -116,10 +117,15 @@ def main(args):
         ### TRAINING START
         print('TRAINING START')
         batch_num=(len(train_data) // args.batch_size)
-        while state["epochs"] < 150:
+        while state["epochs"] < 100:
+        #     if state["epochs"]<10:
+        #         args.alpha=1
+        #     else:
+        #         args.alpha=0
+            # print('fix alpha:',args.alpha)
             memory_alpha=[]
             print("epoch:"+str(state["epochs"]))
-            
+            student_KD.train()
             # monitor_value    
             avg_origin_loss=0
             with tqdm(total=len(dataloader)) as pbar:
@@ -130,11 +136,11 @@ def main(args):
                     if args.teacher_model is not None:
                         # Set LR for this iteration  
                         #print('base_model from KD')
-                        student_KD.train()
+                        
 
                         utils.set_cyclic_lr(KD_optimizer, example_num, len(train_data) // args.batch_size, args.cycles, args.min_lr, args.lr)
                         
-
+                        
                         KD_optimizer.zero_grad()
                         KD_outputs, KD_hard_loss ,KD_loss ,KD_soft_loss = utils.KD_compute_loss(student_KD,teacher_model, x, targets, My_criterion,alpha=args.alpha,compute_grad=True,KD_method=args.KD_method)
                         KD_optimizer.step()
@@ -229,6 +235,7 @@ def main(args):
     # Test loss
     print("TESTING")
     # eval metrics
+    _ = utils.load_model(student_KD, KD_optimizer, state["best_checkpoint"], args.cuda)
     test_metrics = evaluate(args, dataset["test"], student_KD)
     test_pesq=test_metrics['pesq']
     test_stoi=test_metrics['stoi']

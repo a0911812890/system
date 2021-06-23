@@ -142,18 +142,26 @@ def main(args):
 
         ### TRAINING START
         print('TRAINING START')
+        if state["epochs"]>0:
+            state["epochs"]=state["epochs"]+1
         batch_num=(len(train_data) // args.batch_size)
-        PG_lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer=PG_optimizer, gamma=args.decayRate)
-        counting=0
-        print(state["epochs"])
-        while counting<state["epochs"]:
-            counting+=1
-            PG_lr_scheduler.step()
-            print(f'modify lr RL rate : {counting} , until : {state["epochs"]}')
+        
+        if args.teacher_model is not None :
+            counting=0
+            PG_lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer=PG_optimizer, gamma=args.decayRate)
+            
+            while counting<state["epochs"]:
+                PG_optimizer.zero_grad()
+                PG_optimizer.step()
+                counting+=1
+                PG_lr_scheduler.step()
+            # print(f'modify lr RL rate : {counting} , until : {state["epochs"]}')
         while state["epochs"] < 100:
             memory_alpha=[]
             print("epoch:"+str(state["epochs"]))
-            
+            student_KD.train()
+            student_copy.train()
+            student_copy2.train()
             # monitor_value    
             total_avg_reward=0
             total_avg_scalar_reward=0
@@ -187,9 +195,6 @@ def main(args):
 
                         student_copy2.load_state_dict(temp['state_dict'])
                         copy2_optimizer.load_state_dict(temp['optim_dict'])
-                        student_KD.train()
-                        student_copy.train()
-                        student_copy2.train()
 
                         utils.set_cyclic_lr(KD_optimizer, example_num, len(train_data) // args.batch_size, args.cycles, args.min_lr, args.lr)
                         utils.set_cyclic_lr(copy_optimizer, example_num, len(train_data) // args.batch_size, args.cycles, args.min_lr, args.lr)
@@ -304,12 +309,11 @@ def main(args):
                 writer.add_scalar("total_avg_reward", total_avg_reward, state["epochs"])
                 writer.add_scalar("total_avg_scalar_reward", total_avg_scalar_reward, state["epochs"])
                 
-                ### training PG ###
-                print(50*'=')
-                print(f'enhancement model is trained,now training PG ')
                 RL_checkpoint_path = os.path.join(checkpoint_dir, "RL_checkpoint_" + str(state["epochs"]))
                 utils.save_model(policy_network, PG_optimizer, state, RL_checkpoint_path)
-                print(50*'=')
+                PG_lr_scheduler.step()
+                
+                
             writer.add_scalar("same", same, state["epochs"])
             writer.add_scalar("avg_origin_loss", avg_origin_loss, state["epochs"])
             writer.add_scalar("val_enhance_pesq",choose_val[0], state["epochs"])
@@ -338,7 +342,7 @@ def main(args):
             with open(os.path.join(log_dir, 'alpha_'+str(state["epochs"])), "wb") as fp:   #Pickling
                 pickle.dump(memory_alpha, fp)
 
-            PG_lr_scheduler.step()
+            
             state["epochs"] += 1
         writer.close()
         info=args.model_name

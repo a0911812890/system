@@ -28,6 +28,9 @@ def KD_compute_loss(model,teacher_model, inputs, targets, criterion,alpha, compu
     elif  KD_method =='B':
         student_loss = criterion(student_all_outputs,targets,1) 
         KD_loss = criterion(student_all_outputs, teacher_all_outputs,alpha)
+    elif  KD_method =='C':
+        student_loss = criterion(student_all_outputs,targets,alpha) 
+        KD_loss = criterion(student_all_outputs, teacher_all_outputs,1)
     else :
         raise Exception(f"unknown KD_method{KD_method} !!! (A or B)")
 
@@ -134,7 +137,7 @@ def sisnr_loss_for_sample(model, inputs, targets,batch_size):
         Loss, max_snr, estimate_source, reorder_estimate_source = oneMask_criterion.cal_loss(targets, all_outputs, torch.tensor(batch_size*[28793]).cuda())
     return max_snr
 
-def sisnr_compute_loss(model, inputs, targets,batch_size, compute_grad=False):
+def sisnr_compute(model, inputs, targets,batch_size, compute_grad=False):
     loss = 0
     all_outputs = model(inputs)
     Loss, max_snr, estimate_source, reorder_estimate_source = oneMask_criterion.cal_loss(targets, all_outputs, torch.tensor(batch_size*[28793]).cuda())
@@ -142,7 +145,7 @@ def sisnr_compute_loss(model, inputs, targets,batch_size, compute_grad=False):
         Loss.backward()
     avg_sisnr=torch.mean(max_snr).item()
     print(avg_sisnr)
-    return all_outputs, Loss.item()
+    return all_outputs, avg_sisnr
 
 
 ### RL ###    
