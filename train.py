@@ -119,6 +119,8 @@ def main(args):
                 print("load teacher model" + str(args.teacher_model))
                 _ = utils.load_model(teacher_model, None, args.teacher_model, args.cuda)
                 teacher_model.eval()
+                print('set PG_lr_scheduler')
+                PG_lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer=PG_optimizer, gamma=args.decayRate)
                 
             if args.load_RL_model is not None:
                 print("Continuing full RL_model from checkpoint " + str(args.load_RL_model))
@@ -146,22 +148,13 @@ def main(args):
             state["epochs"]=state["epochs"]+1
         batch_num=(len(train_data) // args.batch_size)
         
-        if args.teacher_model is not None :
-            counting=0
-            PG_lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer=PG_optimizer, gamma=args.decayRate)
-            
-            while counting<state["epochs"]:
-                PG_optimizer.zero_grad()
-                PG_optimizer.step()
-                counting+=1
-                PG_lr_scheduler.step()
-            # print(f'modify lr RL rate : {counting} , until : {state["epochs"]}')
         while state["epochs"] < 100:
-            memory_alpha=[]
             print("epoch:"+str(state["epochs"]))
             student_KD.train()
             student_copy.train()
             student_copy2.train()
+
+            memory_alpha=[]
             # monitor_value    
             total_avg_reward=0
             total_avg_scalar_reward=0
@@ -170,8 +163,6 @@ def main(args):
             same=0
             with tqdm(total=len(dataloader)) as pbar:
                 for example_num, (x, targets) in enumerate(dataloader):
-                    # if example_num==20:
-                    #     break
                     if args.cuda:
                         x = x.cuda()
                         targets = targets.cuda()
@@ -181,8 +172,6 @@ def main(args):
                             'state_dict' : None,
                             'optim_dict' : None
                         }
-
-                        
                         temp['state_dict']=copy.deepcopy(student_KD.state_dict())
                         temp['optim_dict']=copy.deepcopy(KD_optimizer.state_dict())
                         #print('base_model from KD')
@@ -217,7 +206,7 @@ def main(args):
                         KD_optimizer.zero_grad()
                         KD_outputs, KD_hard_loss ,KD_loss ,KD_soft_loss = utils.KD_compute_loss(student_KD,teacher_model, x, targets, My_criterion,alpha=nograd_alpha,compute_grad=True,KD_method=args.KD_method)
                         KD_optimizer.step()
-
+                        
                         copy_optimizer.zero_grad()
                         _,_,_,_ = utils.KD_compute_loss(student_copy,teacher_model, x, targets, My_criterion,alpha=1,compute_grad=True,KD_method=args.KD_method)
                         copy_optimizer.step()
