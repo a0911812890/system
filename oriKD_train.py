@@ -18,15 +18,15 @@ from torch.optim import Adam,SGD
 #
 import utils 
 from data import  SeparationDataset,  crop ,get_folds,get_ling_data_list
-from test import evaluate, validate,ling_evaluate,evaluate_without_noisy
+from test import evaluate, validate,ling_evaluate,evaluate_for_enhanced
 from waveunet import Waveunet
 from RL import RL
-from Memory import Memory
 from Loss import customLoss,RL_customLoss
 #
     
 
 def main(args):
+    os.environ['KMP_WARNINGS'] = '0'
     torch.cuda.manual_seed_all(1)
     np.random.seed(0)
     print(args.model_name)
@@ -139,7 +139,7 @@ def main(args):
                         
 
                         utils.set_cyclic_lr(KD_optimizer, example_num, len(train_data) // args.batch_size, args.cycles, args.min_lr, args.lr)
-                        
+                        _, avg_student_KD_loss=utils.compute_loss(student_KD, x, targets, criterion,compute_grad=False)
                         
                         KD_optimizer.zero_grad()
                         KD_outputs, KD_hard_loss ,KD_loss ,KD_soft_loss = utils.KD_compute_loss(student_KD,teacher_model, x, targets, My_criterion,alpha=args.alpha,compute_grad=True,KD_method=args.KD_method)
@@ -147,23 +147,9 @@ def main(args):
 
 
                         # calculate backwarded model MSE
-
-                        avg_origin_loss += 0
                         
-
-                        # avg_reward
-                        # append to memory_alpha
-
-                        # print info
-                        # print(f'avg_KD_rate                 = {avg_KD_rate} ')
-                        # print(f'student_KD_loss             = {avg_student_KD_loss}')              
-                        # print(f'backward_student_copy_loss  = {np.mean(backward_copy_loss.detach().cpu().numpy())}')
-                        # print(f'backward_student_KD_loss    = {np.mean(backward_KD_loss.detach().cpu().numpy())}')
-                        # print(f'backward_student_copy2_loss = {np.mean(backward_copy2_loss.detach().cpu().numpy())}')
-                        # print(f'avg_reward                  = {avg_reward}')
-                        # print(f'total_avg_reward            = {total_avg_reward}')
-                        # print(f'same                        = {same}')
-
+                        avg_origin_loss += avg_student_KD_loss / batch_num
+                        
                         # add to tensorboard
                         writer.add_scalar("KD_loss", KD_loss, state["step"])
                         writer.add_scalar("KD_hard_loss", KD_hard_loss, state["step"])

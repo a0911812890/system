@@ -16,7 +16,6 @@ def compute_output(model, inputs):
 
     return all_outputs
 
-
 ### MSE ###
 def KD_compute_loss(model,teacher_model, inputs, targets, criterion,alpha, compute_grad=False,KD_method='A'):
     student_all_outputs = model(inputs)
@@ -44,14 +43,12 @@ def KD_compute_loss(model,teacher_model, inputs, targets, criterion,alpha, compu
     KD_avg_loss = KD_loss.item() / float(len(student_all_outputs))
     return student_all_outputs, student_avg_loss  ,total_avg_loss ,KD_avg_loss
 
-
 def loss_for_sample(model, inputs, targets):
     loss = 0
     with torch.no_grad():
         all_outputs = model(inputs).detach()
         loss = torch.mean(torch.pow((all_outputs-targets),2),2)/len(all_outputs)
     return loss
-
 
 def compute_loss(model, inputs, targets, criterion, compute_grad=False):
     all_outputs = model(inputs)
@@ -61,31 +58,6 @@ def compute_loss(model, inputs, targets, criterion, compute_grad=False):
 
     avg_loss = loss.item() / float(len(all_outputs))
     return all_outputs, avg_loss 
-
-def range_method(memory_iter,R):
-    SORT, indices = torch.sort(memory_iter,0)
-    bo=normalize(R,0.2,-0.2)*32 #-0.5 # 0.25
-    # print('type',type(bo))
-    bo=int(bo)
-    label=31-bo
-    # print(f'R ={R} bo={bo} label={label}')
-    if label>=len(memory_iter):
-        label=len(memory_iter)-1
-    elif label<0:
-        label=0
-    bound=SORT[label]
-    norm_r = (memory_iter - bound) / (torch.max(memory_iter) - torch.min(memory_iter))
-    norm_r /= 32 * 691
-    norm_r = norm_r.cuda()
-    return norm_r
-
-def value_method(memory_iter,R):
-    bound=(torch.max(memory_iter) - torch.min(memory_iter))*(1-normalize(R,0.1,-0.1))
-    bound+=torch.min(memory_iter)
-    norm_r = (memory_iter - bound) / (torch.max(memory_iter) - torch.min(memory_iter))
-    norm_r /= 32 * 691
-    norm_r = norm_r.cuda()
-    return norm_r
 
 def normalize(inputs,MAX,MIN):
     
@@ -118,7 +90,7 @@ def sisnr_KD_compute_loss(model,teacher_model, inputs, targets, criterion,alpha,
 
     avg_ori_sisnr=torch.mean(ori_max_snr).item()
     avg_KD_sisnr=torch.mean(KD_max_snr).item()
-    avg_sisnr=avg_ori_sisnr+avg_KD_sisnr
+    avg_sisnr=(avg_ori_sisnr+avg_KD_sisnr)/2
     print(f'avg_ori_sisnr={avg_ori_sisnr}')
     print(f'avg_KD_sisnr={avg_KD_sisnr}')
     print(f'avg_sisnr={avg_sisnr}')
@@ -128,7 +100,6 @@ def sisnr_KD_compute_loss(model,teacher_model, inputs, targets, criterion,alpha,
         Loss.backward()
 
     return student_all_outputs,avg_ori_sisnr,avg_sisnr
-
 
 def sisnr_loss_for_sample(model, inputs, targets,batch_size):
     loss = 0
@@ -217,10 +188,8 @@ def mkdir_and_get_path(args):
     if not os.path.isdir(result_dir):
         os.makedirs( result_dir )
     return log_dir,checkpoint_dir,result_dir
-
-
-def save_result(data,dir_path,name):
     
+def save_result(data,dir_path,name):
     with open(os.path.join(dir_path,name+ "_results.pkl"), "wb") as f:
         pickle.dump(data, f)
     data = pd.DataFrame(data)
@@ -326,3 +295,28 @@ def load_latest_model_from(model, optimizer, location, cuda):
     newest_file = max(files, key=os.path.getctime)
     print("load model " + newest_file)
     return load_model(model, optimizer, newest_file, cuda)
+
+# def range_method(memory_iter,R):
+#     SORT, indices = torch.sort(memory_iter,0)
+#     bo=normalize(R,0.2,-0.2)*32 #-0.5 # 0.25
+#     # print('type',type(bo))
+#     bo=int(bo)
+#     label=31-bo
+#     # print(f'R ={R} bo={bo} label={label}')
+#     if label>=len(memory_iter):
+#         label=len(memory_iter)-1
+#     elif label<0:
+#         label=0
+#     bound=SORT[label]
+#     norm_r = (memory_iter - bound) / (torch.max(memory_iter) - torch.min(memory_iter))
+#     norm_r /= 32 * 691
+#     norm_r = norm_r.cuda()
+#     return norm_r
+
+# def value_method(memory_iter,R):
+#     bound=(torch.max(memory_iter) - torch.min(memory_iter))*(1-normalize(R,0.1,-0.1))
+#     bound+=torch.min(memory_iter)
+#     norm_r = (memory_iter - bound) / (torch.max(memory_iter) - torch.min(memory_iter))
+#     norm_r /= 32 * 691
+#     norm_r = norm_r.cuda()
+#     return norm_r

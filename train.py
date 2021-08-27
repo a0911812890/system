@@ -18,18 +18,18 @@ from torch.optim import Adam,SGD
 #
 import utils 
 from data import  SeparationDataset,  crop ,get_folds,get_ling_data_list
-from test import evaluate, validate,ling_evaluate,evaluate_without_noisy
+from test import evaluate, validate,ling_evaluate,evaluate_for_enhanced
 from waveunet import Waveunet
 from RL import RL
-from Memory import Memory
 from Loss import customLoss,RL_customLoss
-#
+#import os
+
     
 
 def main(args):
+    os.environ['KMP_WARNINGS'] = '0'
     torch.cuda.manual_seed_all(1)
     np.random.seed(0)
-    
 
     # filter array
     num_features = [args.features*i for i in range(1, args.levels+2+args.levels_without_sample)] 
@@ -68,14 +68,15 @@ def main(args):
         writer = SummaryWriter(log_dir)
         # set hypeparameter
         # printing hypeparameters info
-        print(25*'='+'printing hypeparameters info'+25*'=')
-        print(f'KD_method  = {args.KD_method}')
+        
         
         with open(os.path.join(log_dir,'config.json'), 'w') as f:
             json.dump(args.__dict__, f, indent=5)
         print('saving commandline_args')
 
         if args.teacher_model is not None:
+            print(25*'='+'printing hypeparameters info'+25*'=')
+            print(f'KD_method  = {args.KD_method}')
             teacher_num_features = [24*i for i in range(1, args.levels+2+args.levels_without_sample)] 
             teacher_model = Waveunet(args.channels, teacher_num_features, args.channels,levels=args.levels, 
                     encoder_kernel_size=args.encoder_kernel_size,decoder_kernel_size=args.decoder_kernel_size,
@@ -119,8 +120,6 @@ def main(args):
                 print("load teacher model" + str(args.teacher_model))
                 _ = utils.load_model(teacher_model, None, args.teacher_model, args.cuda)
                 teacher_model.eval()
-                print('set PG_lr_scheduler')
-                PG_lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer=PG_optimizer, gamma=args.decayRate)
                 
             if args.load_RL_model is not None:
                 print("Continuing full RL_model from checkpoint " + str(args.load_RL_model))
@@ -148,13 +147,20 @@ def main(args):
             state["epochs"]=state["epochs"]+1
         batch_num=(len(train_data) // args.batch_size)
         
+        if args.teacher_model is not None :
+            counting=0
+            PG_lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer=PG_optimizer, gamma=args.decayRate)
+            
+            while counting<state["epochs"]:
+                PG_optimizer.zero_grad()
+                PG_optimizer.step()
+                counting+=1
+                PG_lr_scheduler.step()
+            # print(f'modify lr RL rate : {counting} , until : {state["epochs"]}')
         while state["epochs"] < 100:
-            print("epoch:"+str(state["epochs"]))
-            student_KD.train()
-            student_copy.train()
-            student_copy2.train()
-
             memory_alpha=[]
+            print("epoch:"+str(state["epochs"]))
+            
             # monitor_value    
             total_avg_reward=0
             total_avg_scalar_reward=0
@@ -163,15 +169,23 @@ def main(args):
             same=0
             with tqdm(total=len(dataloader)) as pbar:
                 for example_num, (x, targets) in enumerate(dataloader):
+                    # if example_num==20:
+                    #     break
+                    student_KD.train()
+                    
                     if args.cuda:
                         x = x.cuda()
                         targets = targets.cuda()
                     if args.teacher_model is not None:
+                        student_copy.train()
+                        student_copy2.train()
                         # Set LR for this iteration  
                         temp =  {
                             'state_dict' : None,
                             'optim_dict' : None
                         }
+
+                        
                         temp['state_dict']=copy.deepcopy(student_KD.state_dict())
                         temp['optim_dict']=copy.deepcopy(KD_optimizer.state_dict())
                         #print('base_model from KD')
@@ -206,7 +220,7 @@ def main(args):
                         KD_optimizer.zero_grad()
                         KD_outputs, KD_hard_loss ,KD_loss ,KD_soft_loss = utils.KD_compute_loss(student_KD,teacher_model, x, targets, My_criterion,alpha=nograd_alpha,compute_grad=True,KD_method=args.KD_method)
                         KD_optimizer.step()
-                        
+
                         copy_optimizer.zero_grad()
                         _,_,_,_ = utils.KD_compute_loss(student_copy,teacher_model, x, targets, My_criterion,alpha=1,compute_grad=True,KD_method=args.KD_method)
                         copy_optimizer.step()
@@ -221,9 +235,9 @@ def main(args):
                         backward_copy2_loss = utils.loss_for_sample(student_copy2, x, targets)
 
                         # calculate rewards
-                        rewards,same_num,before_decay=utils.get_rewards(backward_KD_loss,backward_copy_loss,backward_copy2_loss,backward_KD_loss,len(train_data),state["epochs"]+1)
+                        rewards,same_num,before_decay=utils.get_rewards(backward_KD_loss.detach(),backward_copy_loss.detach(),backward_copy2_loss.detach(),backward_KD_loss.detach(),len(train_data),state["epochs"]+1)
                         same+= same_num
-
+                        rewards=rewards.detach()
                         avg_origin_loss += avg_student_KD_loss / batch_num
                         
 
