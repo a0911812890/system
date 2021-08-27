@@ -12,6 +12,9 @@ train(test=false) 會產生三個資料夾
 test(test=true) 時 只需輸入model checkpoints(load_model) 測試完CSV檔放在~/model/test/results
 
 
+測試或者重新訓練使用到讀取時(load_model)
+config.py 的 features 參數要對應 (12%:8 25%:12 50%:17 75%:21 100%:24)
+
 ## gen_data.py  
 * 依靠speech , noise 產生 noisy 可調整 SNR
 ## data.py

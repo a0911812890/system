@@ -3,7 +3,7 @@
      "cuda": true,
      "outside_test": true,
      "test": false,
-     "KD_method": "A",
+     "KD_method": "B",
      "features": 12,
      "model_base_path": "/media/hd03/sutsaiwei_data/Wave-U-Net-Pytorch/model",
      "dataset_dir": "/media/hd03/sutsaiwei_data/data/mydata",
