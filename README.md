@@ -1,18 +1,16 @@
+# system
+執行都是在終端機輸入:python train.py
 
-## system
-train(test=false) 
-終端機輸入:python train.py
+如果test=true  ，會直接跑測試
+如果test=false ，會先訓練再測試
 
-會產生三個資料夾
+train(test=false) 會產生三個資料夾
 1.checkpoints   :保存checkpoints
 2.logs          :包含 alpha每次EPOCHS的值 config.json tensorboard值   
 3.results       :實驗跑完時 選最好checkpoints(根據PESQ) 跑 test
 
 test(test=true) 時 只需輸入model checkpoints(load_model) 測試完CSV檔放在~/model/test/results
-終端機輸入:python train.py
 
-如果test=true  ，會直接跑測試
-如果test=false ，會先訓練再測試
 
 ## gen_data.py  
 * 依靠speech , noise 產生 noisy 可調整 SNR
